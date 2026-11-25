@@ -2852,6 +2852,51 @@ async function collectDroppedDirectoryFiles(
   return results.filter(Boolean);
 }
 
+function buildCandidateFromLooseFiles(
+  files: File[],
+  folderName: string,
+): DroppedFolderCandidate | null {
+  const previews: DroppedFolderFilePreview[] = [];
+  for (const file of files) {
+    if (!file?.name || file.name.startsWith(".") || file.name.startsWith("~$")) continue;
+    const ext = getExt(file.name);
+    const supported =
+      SUPPORTED_EXTENSIONS.has(ext) && file.size > 0 && file.size <= MAX_FILE_SIZE_BYTES;
+    previews.push({
+      relativePath: file.name,
+      name: file.name,
+      size: file.size,
+      ext,
+      supported,
+      file,
+    });
+  }
+  if (previews.length === 0) return null;
+  const supported = previews.filter((p) => p.supported);
+  return {
+    folderName,
+    files: previews,
+    supportedCount: supported.length,
+    skippedCount: previews.length - supported.length,
+    totalSizeBytes: supported.reduce((sum, p) => sum + p.size, 0),
+  };
+}
+
+/**
+ * Converts a standard FileList (from `<input type="file" multiple>`) into previewable
+ * candidates without triggering the browser's `webkitdirectory` upload warning.
+ */
+export function buildDroppedCandidatesFromFileList(
+  files: FileList | File[] | null | undefined,
+  folderName = "Selected Files",
+): DroppedFolderCandidate[] {
+  if (!files) return [];
+  const arr = Array.from(files);
+  if (arr.length === 0) return [];
+  const candidate = buildCandidateFromLooseFiles(arr, folderName);
+  return candidate ? [candidate] : [];
+}
+
 /**
  * Extracts dropped folders and loose files synchronously from a DataTransfer event
  * before the browser invalidates `dataTransfer.items`. Works across Chrome, Edge,
@@ -2904,30 +2949,9 @@ export async function extractDroppedFoldersFromDataTransfer(
   }
 
   if (looseFiles.length > 0) {
-    const loosePreviews: DroppedFolderFilePreview[] = [];
-    for (const file of looseFiles) {
-      if (file.name.startsWith(".") || file.name.startsWith("~$")) continue;
-      const ext = getExt(file.name);
-      const supported =
-        SUPPORTED_EXTENSIONS.has(ext) && file.size > 0 && file.size <= MAX_FILE_SIZE_BYTES;
-      loosePreviews.push({
-        relativePath: file.name,
-        name: file.name,
-        size: file.size,
-        ext,
-        supported,
-        file,
-      });
-    }
-    if (loosePreviews.length > 0) {
-      const supported = loosePreviews.filter((p) => p.supported);
-      candidates.push({
-        folderName: "Dropped Files",
-        files: loosePreviews,
-        supportedCount: supported.length,
-        skippedCount: loosePreviews.length - supported.length,
-        totalSizeBytes: supported.reduce((sum, p) => sum + p.size, 0),
-      });
+    const looseCandidate = buildCandidateFromLooseFiles(looseFiles, "Dropped Files");
+    if (looseCandidate) {
+      candidates.push(looseCandidate);
     }
   }
 

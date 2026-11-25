@@ -625,7 +625,7 @@ describe("browserFolderSync", () => {
       get() {
         return true;
       },
-      set() {},
+      set() { },
     });
 
     let createdInput: HTMLInputElement | null = null;
@@ -633,7 +633,7 @@ describe("browserFolderSync", () => {
     const appendSpy = vi.spyOn(document.body, "appendChild").mockImplementation((node: any) => {
       if (node && node.tagName === "INPUT") {
         createdInput = node as HTMLInputElement;
-        vi.spyOn(createdInput, "click").mockImplementation(() => {});
+        vi.spyOn(createdInput, "click").mockImplementation(() => { });
       }
       return origAppend(node);
     });
@@ -693,7 +693,7 @@ describe("browserFolderSync", () => {
     const appendSpy = vi.spyOn(document.body, "appendChild").mockImplementation((node: any) => {
       if (node && node.tagName === "INPUT") {
         createdInput = node as HTMLInputElement;
-        vi.spyOn(createdInput, "click").mockImplementation(() => {});
+        vi.spyOn(createdInput, "click").mockImplementation(() => { });
       }
       return origAppend(node);
     });
@@ -810,15 +810,15 @@ describe("browserFolderSync", () => {
         is_online: backendFiles > 0,
         connected_folders: backendFiles
           ? [
-              {
-                folder_id: "browser://InstantBridgeRepo",
-                folder_path: "InstantBridgeRepo",
-                display_name: "InstantBridgeRepo",
-                file_count: backendFiles,
-                chunk_count: backendChunks,
-                status: "synced",
-              },
-            ]
+            {
+              folder_id: "browser://InstantBridgeRepo",
+              folder_path: "InstantBridgeRepo",
+              display_name: "InstantBridgeRepo",
+              file_count: backendFiles,
+              chunk_count: backendChunks,
+              status: "synced",
+            },
+          ]
           : [],
         total_files: backendFiles,
         total_chunks: backendChunks,
@@ -943,7 +943,7 @@ describe("browserFolderSync", () => {
 
     // Never resolves -> simulates slow/offline agent HTTP call; Desktop must still render immediately!
     const hangingApi = {
-      getLocalAgentStatus: vi.fn().mockImplementation(() => new Promise(() => {})),
+      getLocalAgentStatus: vi.fn().mockImplementation(() => new Promise(() => { })),
       addLocalFolder: vi.fn(),
       syncLocalFolderWithPairingToken: vi.fn(),
     };
@@ -1009,7 +1009,7 @@ describe("browserFolderSync", () => {
       name: "AliceBrowserFolder",
       kind: "directory",
       queryPermission: vi.fn().mockResolvedValue("granted"),
-      values: async function* () {},
+      values: async function* () { },
     };
     const {
       saveBrowserDirectoryHandle,
@@ -1161,7 +1161,7 @@ describe("browserFolderSync", () => {
       get() {
         return true;
       },
-      set() {},
+      set() { },
     });
 
     const mockApi = {
@@ -1241,7 +1241,7 @@ describe("browserFolderSync", () => {
       get() {
         return true;
       },
-      set() {},
+      set() { },
     });
 
     const mockApi = {
@@ -1437,15 +1437,15 @@ describe("browserFolderSync", () => {
         is_online: connected,
         connected_folders: connected
           ? [
-              {
-                folder_id: "browser://certificate",
-                folder_path: "certificate",
-                display_name: "certificate",
-                file_count: 1,
-                chunk_count: 1,
-                status: "synced",
-              },
-            ]
+            {
+              folder_id: "browser://certificate",
+              folder_path: "certificate",
+              display_name: "certificate",
+              file_count: 1,
+              chunk_count: 1,
+              status: "synced",
+            },
+          ]
           : [],
         total_files: connected ? 1 : 0,
         total_chunks: connected ? 1 : 0,
@@ -1466,7 +1466,7 @@ describe("browserFolderSync", () => {
     await user.click(connectBtn);
 
     const dropzone = await screen.findByTestId("nanvi-folder-dropzone");
-    expect(screen.getByText(/Drag & drop your folder here/i)).toBeInTheDocument();
+    expect(screen.getByText(/Please drag and drop your folder here/i)).toBeInTheDocument();
     expect(screen.queryByText(/No browser upload warning/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Browse with Browser Picker/i })).not.toBeInTheDocument();
 
@@ -1530,126 +1530,74 @@ describe("browserFolderSync", () => {
     setActiveFolderStorageScope(null);
   });
 
-  it("supports compact right-side popout drop window on Vercel web and hides it in desktop mode", async () => {
+  it("opens normal multi-file selector without webkitdirectory on Vercel web, previews files in Nanvi modal, and hides it in desktop mode", async () => {
     delete (window as unknown as { showDirectoryPicker?: unknown }).showDirectoryPicker;
     delete (window as unknown as { electronAPI?: unknown }).electronAPI;
 
     const mockApi = {
-      getLocalAgentToken: vi.fn().mockResolvedValue({ token: "pair-popout" }),
+      getLocalAgentToken: vi.fn().mockResolvedValue({ token: "pair-files" }),
       getLocalAgentStatus: vi.fn().mockResolvedValue({
         is_online: false,
         connected_folders: [],
         total_files: 0,
         total_chunks: 0,
       }),
-      syncLocalFolderWithPairingToken: vi.fn().mockResolvedValue({ status: "ok", folder_id: "browser://popdocs", chunks_synced: 1, files_synced: 1 }),
+      syncLocalFolderWithPairingToken: vi.fn().mockResolvedValue({
+        status: "ok",
+        folder_id: "browser://Selected Files",
+        chunks_synced: 1,
+        files_synced: 1,
+      }),
       sendLocalAgentHeartbeatWithPairingToken: vi.fn().mockResolvedValue({ status: "ok" }),
     };
 
-    const popupDoc = document.implementation.createHTMLDocument("Nanvi Drop");
-    Object.defineProperty(popupDoc, "defaultView", { configurable: true, value: window });
-    const popupClosed = { value: false };
-    const fakePopup = {
-      document: popupDoc,
-      get closed() {
-        return popupClosed.value;
-      },
-      focus: vi.fn(),
-      close: vi.fn(() => {
-        popupClosed.value = true;
-      }),
-      addEventListener: vi.fn(),
-    } as unknown as Window;
+    setActiveFolderStorageScope("normal-file-opener-scope");
+    const user = userEvent.setup();
+    const { unmount } = render(createElement(CompanyFolderPicker, { api: mockApi as any }));
 
-    const origOpen = window.open;
-    const openSpy = vi.fn().mockReturnValue(fakePopup);
-    Object.defineProperty(window, "open", { configurable: true, value: openSpy });
+    // Method 1 shows normal Select Files button and Connect Local Folder (no popout window button)
+    expect(screen.queryByRole("button", { name: /Open Compact Drop Window/i })).not.toBeInTheDocument();
+    const fileInput = screen.getByTestId("nanvi-card-file-input") as HTMLInputElement;
+    expect(fileInput.multiple).toBe(true);
+    expect(fileInput.hasAttribute("webkitdirectory")).toBe(false);
 
-    try {
-      setActiveFolderStorageScope("popout-web-scope");
-      const user = userEvent.setup();
-      const { unmount } = render(createElement(CompanyFolderPicker, { api: mockApi as any }));
+    // Selecting files opens Nanvi confirmation + preview modal cleanly
+    const f1 = {
+      name: "quarterly_report.txt",
+      type: "text/plain",
+      size: 32,
+      lastModified: 1700009000000,
+      text: async () => "Q4 Enterprise Summary Content",
+      arrayBuffer: async () => new ArrayBuffer(0),
+    } as unknown as File;
+    Object.defineProperty(fileInput, "files", { configurable: true, value: [f1] });
+    fireEvent.change(fileInput);
 
-      await user.click(await screen.findByRole("button", { name: /^Connect Local Folder$/i }));
-      const popoutBtn = await screen.findByRole("button", { name: /Open Compact Drop Window \(Right\)/i });
-      await user.click(popoutBtn);
+    expect(
+      await screen.findByText(/Would you like to connect these 1 files to Nanvi\?/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText("quarterly_report.txt")).toBeInTheDocument();
 
-      expect(openSpy).toHaveBeenCalledTimes(1);
-      const [, winName, features] = openSpy.mock.calls[0];
-      expect(winName).toBe("nanvi-folder-drop");
-      expect(String(features)).toContain("popup=yes");
+    await user.click(screen.getByRole("button", { name: /^Connect Files$/i }));
+    expect(
+      await screen.findByText(/Connected 'Selected Files' \(1 files\) — Ready to search/i),
+    ).toBeInTheDocument();
 
-      await waitFor(() => {
-        expect(popupDoc.body.querySelector('[data-testid="nanvi-folder-dropzone"]')).not.toBeNull();
-      });
+    // Clicking Connect Local Folder opens the "Please drag and drop your folder here" prompt
+    await user.click(await screen.findByRole("button", { name: /^Connect Local Folder$/i }));
+    expect(await screen.findByText(/Please drag and drop your folder here/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Select Files$/i })).toBeInTheDocument();
+    unmount();
 
-      const popoutDropzone = popupDoc.body.querySelector('[data-testid="nanvi-folder-dropzone"]')!;
-      const rootEntry = {
-        isFile: false,
-        isDirectory: true,
-        name: "popdocs",
-        createReader: () => {
-          let done = false;
-          return {
-            readEntries: (cb: (entries: any[]) => void) => {
-              if (!done) {
-                done = true;
-                cb([
-                  {
-                    isFile: true,
-                    isDirectory: false,
-                    name: "pop_note.txt",
-                    file: (fCb: (f: File) => void) =>
-                      fCb({
-                        name: "pop_note.txt",
-                        type: "text/plain",
-                        size: 20,
-                        lastModified: 1700008000000,
-                        text: async () => "Popout drop worked.",
-                        arrayBuffer: async () => new ArrayBuffer(0),
-                      } as unknown as File),
-                  },
-                ]);
-              } else {
-                cb([]);
-              }
-            },
-          };
-        },
-      };
+    // Desktop (.exe / .msix) must NOT render the web-only Select Files button
+    (window as unknown as { electronAPI?: unknown }).electronAPI = {
+      isDesktop: true,
+      platform: "win32",
+    };
+    render(createElement(CompanyFolderPicker, { api: mockApi as any }));
+    expect(screen.queryByRole("button", { name: /^Select Files$/i })).not.toBeInTheDocument();
 
-      fireEvent.drop(popoutDropzone, {
-        dataTransfer: {
-          items: [{ kind: "file", webkitGetAsEntry: () => rootEntry }],
-          files: [],
-        },
-      });
-
-      await waitFor(() => {
-        expect(popupDoc.body.textContent).toContain('Would you like to connect "popdocs" to Nanvi?');
-      });
-
-      const connectBtn = Array.from(popupDoc.body.querySelectorAll("button")).find((b) =>
-        /^Connect Folder$/i.test(b.textContent || ""),
-      );
-      expect(connectBtn).toBeDefined();
-      await user.click(connectBtn!);
-
-      expect(await screen.findByText(/Connected 'popdocs' \(1 files\) — Ready to search/i)).toBeInTheDocument();
-      unmount();
-
-      // Desktop (.exe / .msix) must NOT expose the web popout button
-      (window as unknown as { electronAPI?: unknown }).electronAPI = {
-        isDesktop: true,
-        platform: "win32",
-      };
-      render(createElement(CompanyFolderPicker, { api: mockApi as any }));
-      expect(screen.queryByRole("button", { name: /Open Compact Drop Window/i })).not.toBeInTheDocument();
-
-      await clearSavedBrowserDirectoryHandle("popdocs");
-      setActiveFolderStorageScope(null);
-    } finally {
-      Object.defineProperty(window, "open", { configurable: true, value: origOpen });
-    }
+    await clearSavedBrowserDirectoryHandle("Selected Files");
+    setActiveFolderStorageScope(null);
   });
 });
