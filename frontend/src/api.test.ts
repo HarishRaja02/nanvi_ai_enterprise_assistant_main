@@ -68,4 +68,45 @@ describe("NanviApiClient", () => {
     expect(events).toEqual(["task_started", "task_complete"]);
     expect(resp.answer).toBe("Hello!");
   });
+
+  it("preserves server file_results and sources when desktop local folder search has zero matches", () => {
+    const api = new NanviApiClient({ baseUrl: "/api" }) as unknown as {
+      reconcileDesktopChatResponse: (res: any, localCtx: any, query: string) => any;
+    };
+    const serverRes = {
+      conversation_id: "c-proposal",
+      answer: "Found matching proposals.",
+      capability: "knowledge",
+      sources: [
+        {
+          reference_id: "ref-1",
+          source_type: "file",
+          display_name: "Nanvi_Overnight_Customer_Chat_Support_Proposal.pdf",
+          title: "Nanvi_Overnight_Customer_Chat_Support_Proposal.pdf",
+          location: "Office/Proposal/Customer Support/Nanvi_Overnight_Customer_Chat_Support_Proposal.pdf",
+        },
+      ],
+      file_results: [
+        {
+          name: "Nanvi_Overnight_Customer_Chat_Support_Proposal.pdf",
+          path: "Office/Proposal/Customer Support/Nanvi_Overnight_Customer_Chat_Support_Proposal.pdf",
+          full_path: "Office/Proposal/Customer Support/Nanvi_Overnight_Customer_Chat_Support_Proposal.pdf",
+        },
+      ],
+      trace: [],
+      history: [],
+    };
+    const localZeroCtx = {
+      folder_path: "C:\\Users\\sylvia\\Documents",
+      files: [],
+      chunks: [],
+      zero_match: true,
+      folder_stats: { total_files: 5, categories: {} },
+    };
+
+    const reconciled = api.reconcileDesktopChatResponse(serverRes, localZeroCtx, "proposal files");
+    expect(reconciled.file_results).toHaveLength(1);
+    expect(reconciled.sources).toHaveLength(1);
+    expect(reconciled.file_results[0].name).toBe("Nanvi_Overnight_Customer_Chat_Support_Proposal.pdf");
+  });
 });

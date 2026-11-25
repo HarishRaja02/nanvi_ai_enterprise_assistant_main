@@ -383,7 +383,7 @@ export function useVoiceSession({
     setState("listening");
     earconService.playListening();
 
-    await speechRecognitionService.startListening({
+    const started = await speechRecognitionService.startListening({
       onSpeechStarted: () => {
         cancelFollowUpWindow();
       },
@@ -450,6 +450,18 @@ export function useVoiceSession({
             speechRecognitionService.clearRecordedAudio();
             void sendVoiceQueryRef.current(whisperText.trim());
           } else {
+            let hadMicError = false;
+            setContextState((prev) => {
+              if (prev.lastError) {
+                hadMicError = true;
+                return prev;
+              }
+              return prev;
+            });
+            if (hadMicError) {
+              setState("error");
+              return;
+            }
             // Unintelligible or empty input: ask user to repeat the sentence
             setState("speaking");
             const repeatPrompt = "Please can you repeat the sentence?";
@@ -480,8 +492,12 @@ export function useVoiceSession({
       onError: (err) => {
         if (!isOpenRef.current) return;
         setContextState((prev) => ({ ...prev, lastError: err }));
+        setState("error");
       },
     });
+    if (!started && isOpenRef.current) {
+      setState("error");
+    }
   }, [api, handleBargeIn]);
   startListeningLoopRef.current = startListeningLoop;
 
@@ -956,6 +972,18 @@ export function useVoiceSession({
         speechRecognitionService.clearRecordedAudio();
         void sendVoiceQuery(whisperText.trim());
       } else {
+        let hadMicError = false;
+        setContextState((prev) => {
+          if (prev.lastError) {
+            hadMicError = true;
+            return prev;
+          }
+          return prev;
+        });
+        if (hadMicError) {
+          setState("error");
+          return;
+        }
         setState("speaking");
         const repeatPrompt = "Please can you repeat the sentence?";
         setContextState((prev) => ({

@@ -12,6 +12,7 @@ import { cleanDisplayText, speechSynthesisService } from "./speechSynthesisServi
 import { speechRecognitionService } from "./speechRecognitionService";
 import { earconService } from "./earconService";
 import { isHighRiskIntent, getIntentMetadata, type FrontendIntentDef } from "./intentRegistry";
+import { openSystemMicrophoneSettings } from "../../lib/voiceInputGuard";
 import type { NanviApiClient, UserIdentity } from "../../api";
 import type { SourceView } from "../../lib/sources";
 
@@ -342,15 +343,28 @@ export const VoiceAssistantMode: React.FC<VoiceAssistantModeProps> = ({
 
               {/* Tap to Speak button when session is idle or recovering from an error */}
               {(voice.state === "idle" || voice.state === "error") && (
-                <button
-                  type="button"
-                  className="voice-done-speaking-btn"
-                  onClick={() => void voice.startListening()}
-                  title="Click to resume speaking"
-                >
-                  <Mic size={13} aria-hidden="true" />
-                  <span>Tap to Speak</span>
-                </button>
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  <button
+                    type="button"
+                    className="voice-done-speaking-btn"
+                    onClick={() => void voice.requestMicrophonePermission()}
+                    title="Click to activate microphone and resume speaking"
+                  >
+                    <Mic size={13} aria-hidden="true" />
+                    <span>{voice.state === "error" ? "Allow Microphone & Try Again" : "Tap to Speak"}</span>
+                  </button>
+                  {voice.state === "error" && typeof window !== "undefined" && window.electronAPI?.openMicSettings && (
+                    <button
+                      type="button"
+                      className="voice-done-speaking-btn"
+                      onClick={() => void openSystemMicrophoneSettings()}
+                      title="Open Windows Microphone Privacy Settings"
+                    >
+                      <Settings2 size={13} aria-hidden="true" />
+                      <span>Open Mic Settings</span>
+                    </button>
+                  )}
+                </div>
               )}
             </div>
 

@@ -63,4 +63,14 @@ table, .tabular { font-variant-numeric: tabular-nums; }
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+
+  /* Keep essential live progress indicators visibly active */
+  .ai-step-spinner,
+  .rag-pulse-dot,
+  .spin,
+  .animate-spin,
+  .dots i {
+    animation-duration: 0.9s !important;
+    animation-iteration-count: infinite !important;
+  }
 }

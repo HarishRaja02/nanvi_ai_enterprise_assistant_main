@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, Notification, session } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Notification, session, systemPreferences } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -1144,6 +1144,50 @@ ipcMain.handle('shell:showItemInFolder', async (_event, filePath) => {
   }
 });
 
+ipcMain.handle('voice:getMicAccessStatus', async () => {
+  try {
+    if (systemPreferences && typeof systemPreferences.getMediaAccessStatus === 'function') {
+      const status = systemPreferences.getMediaAccessStatus('microphone');
+      return { status: String(status || 'unknown'), platform: process.platform };
+    }
+  } catch (_) {
+    // ignore platform lookup errors
+  }
+  return { status: 'unknown', platform: process.platform };
+});
+
+ipcMain.handle('voice:requestMicAccess', async () => {
+  try {
+    if (process.platform === 'darwin' && systemPreferences && typeof systemPreferences.askForMediaAccess === 'function') {
+      const granted = await systemPreferences.askForMediaAccess('microphone');
+      return { granted: Boolean(granted), status: granted ? 'granted' : 'denied' };
+    }
+    if (systemPreferences && typeof systemPreferences.getMediaAccessStatus === 'function') {
+      const status = String(systemPreferences.getMediaAccessStatus('microphone') || 'unknown');
+      return { granted: status !== 'denied' && status !== 'restricted', status };
+    }
+  } catch (_) {
+    // ignore
+  }
+  return { granted: true, status: 'unknown' };
+});
+
+ipcMain.handle('voice:openMicSettings', async () => {
+  try {
+    if (process.platform === 'win32') {
+      await shell.openExternal('ms-settings:privacy-microphone');
+      return true;
+    }
+    if (process.platform === 'darwin') {
+      await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone');
+      return true;
+    }
+  } catch (_) {
+    // ignore
+  }
+  return false;
+});
+
 // App Lifecycle
 app.whenReady().then(async () => {
   // Automatically grant media/microphone permissions so Voice Assistant works seamlessly
@@ -1162,6 +1206,10 @@ app.whenReady().then(async () => {
       }
       callback(true);
     });
+
+    if (typeof session.defaultSession.setDevicePermissionHandler === 'function') {
+      session.defaultSession.setDevicePermissionHandler(() => true);
+    }
   }
 
   desktopSearchEngine.setCacheDir(path.join(app.getPath('userData'), 'search-index-cache'));

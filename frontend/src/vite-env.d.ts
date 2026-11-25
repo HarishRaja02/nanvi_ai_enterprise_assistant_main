@@ -107,6 +107,9 @@ interface ElectronAPI {
   readFileBytes?: (filePath: string) => Promise<Uint8Array | null>;
   openPath?: (filePath: string) => Promise<{ success?: boolean; error?: string }>;
   showItemInFolder?: (filePath: string) => Promise<boolean>;
+  getMicAccessStatus?: () => Promise<{ status: string; platform: string }>;
+  requestMicAccess?: () => Promise<{ granted: boolean; status: string }>;
+  openMicSettings?: () => Promise<boolean>;
   showNotification: (title: string, body: string) => Promise<boolean>;
   openExternal: (url: string) => Promise<void>;
   onAccountBlocked: (callback: () => void) => void;

@@ -4,6 +4,12 @@ import {
   resolveSelfRepair,
   TURN_TIMEOUTS,
 } from "./turnDetector";
+import {
+  checkMicrophonePermission,
+  classifyMicrophoneError,
+  computeTimeDomainRms,
+  isWhisperHallucination,
+} from "../../lib/voiceInputGuard";
 
 type RecognitionCallbacks = {
   onInterimText?: (text: string) => void;
@@ -122,6 +128,11 @@ class SpeechRecognitionService {
   private lastConfidence = 1.0;
   private preferredLang = "en-IN";
   private incompleteGraceCount = 0;
+  private hasAudioAnalyser = false;
+  private hasAudioSignal = false;
+  private peakRms = 0;
+  private peakFreqAvg = 0;
+  private lastMicError: string | null = null;
 
   constructor() {
     if (typeof window !== "undefined") {
@@ -156,7 +167,13 @@ class SpeechRecognitionService {
   }
 
   async requestMicrophone(): Promise<MediaStream | null> {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    this.lastMicError = null;
+    const perm = await checkMicrophonePermission();
+    if (perm.blocked) {
+      this.lastMicError =
+        perm.message ||
+        "Microphone access is required. Please activate microphone permission and try again.";
+      this.callbacks.onError?.(this.lastMicError);
       return null;
     }
     try {
@@ -169,9 +186,9 @@ class SpeechRecognitionService {
       });
       return stream;
     } catch (err: any) {
-      if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
-        this.callbacks.onError?.("Microphone permission was denied. Please allow microphone in browser address bar.");
-      }
+      const classified = classifyMicrophoneError(err);
+      this.lastMicError = classified.message;
+      this.callbacks.onError?.(classified.message);
       return null;
     }
   }
@@ -182,6 +199,10 @@ class SpeechRecognitionService {
 
     const sessionId = ++this.activeSessionId;
     this.isListening = true;
+    this.hasAudioAnalyser = false;
+    this.hasAudioSignal = false;
+    this.peakRms = 0;
+    this.peakFreqAvg = 0;
 
     try {
       // 1. Obtain microphone stream
@@ -199,7 +220,11 @@ class SpeechRecognitionService {
       }
 
       if (!stream) {
-        callbacks.onError?.("Microphone access is required for Voice Assistant. Please click 'Allow Microphone'.");
+        if (!this.lastMicError) {
+          callbacks.onError?.(
+            "Microphone access is required for Voice Assistant. Please activate your microphone and click 'Allow Microphone'."
+          );
+        }
         this.isListening = false;
         return false;
       }
@@ -355,6 +380,8 @@ class SpeechRecognitionService {
       this.analyser = analyser;
 
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      const timeDomainArray = new Uint8Array(analyser.fftSize);
+      this.hasAudioAnalyser = true;
 
       const checkVolume = () => {
         if (!this.analyser || !this.isListening) return;
@@ -365,12 +392,21 @@ class SpeechRecognitionService {
           sum += dataArray[i];
         }
         const avg = sum / dataArray.length;
+        let rms = 0;
+        if (typeof this.analyser.getByteTimeDomainData === "function") {
+          this.analyser.getByteTimeDomainData(timeDomainArray);
+          rms = computeTimeDomainRms(timeDomainArray);
+        }
+        if (rms > this.peakRms) this.peakRms = rms;
+        if (avg > this.peakFreqAvg) this.peakFreqAvg = avg;
+
         // Resilient volume normalization across all hardware types (Bluetooth headsets like Rockerz, laptops, USB mics)
         // Background floor in quiet room is avg < 2.5. Human voice raises avg to 8 - 45.
         const normalized = Math.min(1.0, Math.max(0, (avg - 2.5) / 42));
 
-        // Detect user speech activity via microphone volume
-        if (normalized > 0.08) {
+        // Detect user speech activity via microphone volume or time-domain RMS
+        if (normalized > 0.08 || rms > 0.012) {
+          this.hasAudioSignal = true;
           this.lastSpokenTime = Date.now();
           if (!this.speechDetected) {
             this.speechDetected = true;
@@ -433,11 +469,26 @@ class SpeechRecognitionService {
   clearRecordedAudio(): void {
     this.audioChunks = [];
     this.speechDetected = false;
+    this.hasAudioSignal = false;
+    this.peakRms = 0;
+    this.peakFreqAvg = 0;
   }
 
   async transcribeViaBackend(api: NanviApiClient): Promise<string | null> {
+    const noSignal =
+      this.hasAudioAnalyser &&
+      !this.hasAudioSignal &&
+      this.peakRms < 0.008 &&
+      this.peakFreqAvg < 3.0;
     const blob = await this.getRecordedAudioBlob();
-    if (!blob || blob.size < 1000) return null;
+    if (noSignal || !blob || blob.size < 1000) {
+      if (noSignal) {
+        this.callbacks.onError?.(
+          "No microphone audio detected. Please activate and unmute your microphone."
+        );
+      }
+      return null;
+    }
 
     try {
       const base64 = await new Promise<string>((resolve, reject) => {
@@ -454,7 +505,11 @@ class SpeechRecognitionService {
       const mimeType = blob.type || "audio/webm";
       console.log(`[Nanvi Voice] Sending ${Math.round(blob.size / 1024)} KB audio to Groq Whisper...`);
       const res = await api.voiceTranscribe(base64, mimeType);
-      const corrected = applyPhoneticCorrections(res.text || "");
+      const rawText = String(res?.text || "").trim();
+      if (res?.no_speech || !rawText || isWhisperHallucination(rawText)) {
+        return null;
+      }
+      const corrected = applyPhoneticCorrections(rawText);
       console.log("[Nanvi Voice] Groq Whisper transcribed:", corrected);
       return corrected;
     } catch (err) {

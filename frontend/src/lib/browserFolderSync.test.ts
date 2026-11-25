@@ -1,6 +1,6 @@
 import { createElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { NanviApiClient } from "../api";
 import { CompanyFolderPicker } from "../components/ui/CompanyFolderPicker";
@@ -10,11 +10,13 @@ import {
   clearDesktopLocalFolder,
   clearSavedBrowserDirectoryHandle,
   connectDesktopFolderDirect,
+  extractDroppedFoldersFromDataTransfer,
   extractOfficeTextFromBytes,
   extractTextFromBrowserFile,
   getAllCachedFolderNames,
   getBrowserFolderMode,
   getBrowserFolderRealPath,
+  getCachedFolderFilesPreview,
   getDesktopLocalStatus,
   getLastCachedFolderName,
   inferBrowserFileMime,
@@ -23,6 +25,7 @@ import {
   readBrowserLocalFile,
   setActiveFolderStorageScope,
   setBrowserFolderRealPath,
+  syncDroppedFolder,
   syncWebkitFileList,
   waitForBackgroundFolderSync,
 } from "./browserFolderSync";
@@ -839,6 +842,10 @@ describe("browserFolderSync", () => {
     const connectBtn = await screen.findByRole("button", { name: /^Connect Local Folder$/i });
     await user.click(connectBtn);
 
+    // Opens Nanvi Drag & Drop modal first; choosing Browse with Browser Picker uses showDirectoryPicker
+    const pickerFallbackBtn = await screen.findByRole("button", { name: /Browse with Browser Picker/i });
+    await user.click(pickerFallbackBtn);
+
     // Must immediately show Connected & never show blocking Reading/Syncing progress bars
     expect(await screen.findByText(/Connected 'InstantBridgeRepo' \(25 files\) — Ready to search/i)).toBeInTheDocument();
     expect(screen.queryByText(/Reading \(/i)).not.toBeInTheDocument();
@@ -1267,5 +1274,219 @@ describe("browserFolderSync", () => {
     const pdfText = await extractTextFromBrowserFile(pdfFile, fakeApi);
     expect(pdfText).toContain("Embedded Receipt #991");
     expect(extractMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("extracts dropped folders with >100 batched entries, filters ignored dirs, and syncs with zero browser upload prompt", async () => {
+    const makeEntryFile = (name: string, content: string, sizeOverride?: number) => ({
+      isFile: true,
+      isDirectory: false,
+      name,
+      file: (cb: (f: File) => void) =>
+        cb({
+          name,
+          type: "text/plain",
+          size: sizeOverride ?? content.length,
+          lastModified: 1700005000000,
+          text: async () => content,
+          arrayBuffer: async () => new TextEncoder().encode(content).buffer,
+        } as unknown as File),
+    });
+
+    const batchedFiles = Array.from({ length: 105 }, (_, i) =>
+      makeEntryFile(`cert_${i}.txt`, `Certificate document ${i}`),
+    );
+    const ignoredDir = {
+      isFile: false,
+      isDirectory: true,
+      name: "node_modules",
+      createReader: () => {
+        throw new Error("Should not traverse ignored directory");
+      },
+    };
+    const skippedExe = makeEntryFile("installer.exe", "MZ", 10);
+    const subDir = {
+      isFile: false,
+      isDirectory: true,
+      name: "2026",
+      createReader: () => {
+        let called = false;
+        return {
+          readEntries: (cb: (entries: any[]) => void) => {
+            if (!called) {
+              called = true;
+              cb([makeEntryFile("iso_cert.md", "# ISO 27001 Certificate")]);
+            } else {
+              cb([]);
+            }
+          },
+        };
+      },
+    };
+
+    const rootDirEntry = {
+      isFile: false,
+      isDirectory: true,
+      name: "certificate",
+      createReader: () => {
+        let step = 0;
+        const allTop = [...batchedFiles, ignoredDir, skippedExe, subDir];
+        return {
+          readEntries: (cb: (entries: any[]) => void) => {
+            // Simulate Chromium 100-entry batching
+            if (step === 0) {
+              step++;
+              cb(allTop.slice(0, 100));
+            } else if (step === 1) {
+              step++;
+              cb(allTop.slice(100));
+            } else {
+              cb([]);
+            }
+          },
+        };
+      },
+    };
+
+    const fakeDataTransfer = {
+      items: [
+        {
+          kind: "file",
+          webkitGetAsEntry: () => rootDirEntry,
+        },
+      ],
+      files: [],
+    } as unknown as DataTransfer;
+
+    const extracted = await extractDroppedFoldersFromDataTransfer(fakeDataTransfer);
+    expect(extracted).toHaveLength(1);
+    expect(extracted[0].folderName).toBe("certificate");
+    expect(extracted[0].supportedCount).toBe(106);
+    expect(extracted[0].skippedCount).toBe(1);
+    expect(extracted[0].files.some((f) => f.relativePath === "2026/iso_cert.md")).toBe(true);
+
+    const mockApi = {
+      getLocalAgentToken: vi.fn().mockResolvedValue({ token: "pair-drop" }),
+      getLocalAgentStatus: vi.fn().mockResolvedValue({ is_online: false, connected_folders: [] }),
+      syncLocalFolderWithPairingToken: vi.fn().mockResolvedValue({ status: "ok" }),
+      sendLocalAgentHeartbeatWithPairingToken: vi.fn().mockResolvedValue({ status: "ok" }),
+    };
+
+    setActiveFolderStorageScope("drop-unit-scope");
+    const syncRes = await syncDroppedFolder(mockApi as any, extracted[0]);
+    expect(syncRes?.folderName).toBe("certificate");
+    expect(syncRes?.fileCount).toBe(106);
+    expect(mockApi.syncLocalFolderWithPairingToken).toHaveBeenCalled();
+
+    const cachedPreview = await getCachedFolderFilesPreview("certificate");
+    expect(cachedPreview.some((m) => m.relative_path === "2026/iso_cert.md")).toBe(true);
+
+    const localDoc = await readBrowserLocalFile("certificate/2026/iso_cert.md");
+    expect(localDoc?.name).toBe("iso_cert.md");
+
+    await clearSavedBrowserDirectoryHandle("certificate");
+    setActiveFolderStorageScope(null);
+  });
+
+  it("shows Nanvi Drag & Drop modal, previews dropped files with confirmation prompt, and previews connected folders", async () => {
+    delete (window as unknown as { showDirectoryPicker?: unknown }).showDirectoryPicker;
+    delete (window as unknown as { electronAPI?: unknown }).electronAPI;
+
+    let connected = false;
+    const mockApi = {
+      getLocalAgentToken: vi.fn().mockResolvedValue({ token: "pair-ui-drop" }),
+      getLocalAgentStatus: vi.fn().mockImplementation(async () => ({
+        is_online: connected,
+        connected_folders: connected
+          ? [
+              {
+                folder_id: "browser://certificate",
+                folder_path: "certificate",
+                display_name: "certificate",
+                file_count: 1,
+                chunk_count: 1,
+                status: "synced",
+              },
+            ]
+          : [],
+        total_files: connected ? 1 : 0,
+        total_chunks: connected ? 1 : 0,
+      })),
+      syncLocalFolderWithPairingToken: vi.fn().mockImplementation(async () => {
+        connected = true;
+        return { status: "ok", folder_id: "browser://certificate", chunks_synced: 1, files_synced: 1 };
+      }),
+      sendLocalAgentHeartbeatWithPairingToken: vi.fn().mockResolvedValue({ status: "ok" }),
+    };
+
+    setActiveFolderStorageScope("drop-ui-scope");
+    const user = userEvent.setup();
+    render(createElement(CompanyFolderPicker, { api: mockApi as any }));
+
+    // 1. Clicking Connect Local Folder opens Nanvi's Drag & Drop popup (does NOT trigger webkitdirectory input)
+    const connectBtn = await screen.findByRole("button", { name: /^Connect Local Folder$/i });
+    await user.click(connectBtn);
+
+    const dropzone = await screen.findByTestId("nanvi-folder-dropzone");
+    expect(screen.getByText(/Drag & drop your folder here/i)).toBeInTheDocument();
+    expect(screen.getByText(/No browser upload warning/i)).toBeInTheDocument();
+
+    // 2. Dropping a folder switches modal to Nanvi file preview + "Would you like to connect..." confirmation
+    const rootEntry = {
+      isFile: false,
+      isDirectory: true,
+      name: "certificate",
+      createReader: () => {
+        let done = false;
+        return {
+          readEntries: (cb: (entries: any[]) => void) => {
+            if (!done) {
+              done = true;
+              cb([
+                {
+                  isFile: true,
+                  isDirectory: false,
+                  name: "compliance_cert.txt",
+                  file: (fCb: (f: File) => void) =>
+                    fCb({
+                      name: "compliance_cert.txt",
+                      type: "text/plain",
+                      size: 32,
+                      lastModified: 1700006000000,
+                      text: async () => "Verified enterprise certificate.",
+                      arrayBuffer: async () => new ArrayBuffer(0),
+                    } as unknown as File),
+                },
+              ]);
+            } else {
+              cb([]);
+            }
+          },
+        };
+      },
+    };
+
+    fireEvent.drop(dropzone, {
+      dataTransfer: {
+        items: [{ kind: "file", webkitGetAsEntry: () => rootEntry }],
+        files: [],
+      },
+    });
+
+    expect(
+      await screen.findByText(/Would you like to connect "certificate" to Nanvi\?/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText("compliance_cert.txt")).toBeInTheDocument();
+
+    // 3. Clicking Connect Folder inside Nanvi modal connects and shows the Preview Files button
+    await user.click(screen.getByRole("button", { name: /^Connect Folder$/i }));
+    expect(await screen.findByText(/Connected 'certificate' \(1 files\) — Ready to search/i)).toBeInTheDocument();
+
+    const previewBtn = await screen.findByRole("button", { name: /Preview Files/i });
+    await user.click(previewBtn);
+    expect(await screen.findByText(/Folder Preview — certificate/i)).toBeInTheDocument();
+    expect(await screen.findByText("compliance_cert.txt")).toBeInTheDocument();
+
+    await clearSavedBrowserDirectoryHandle("certificate");
+    setActiveFolderStorageScope(null);
   });
 });

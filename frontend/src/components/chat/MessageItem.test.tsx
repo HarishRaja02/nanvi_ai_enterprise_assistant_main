@@ -268,4 +268,36 @@ describe("MessageItem", () => {
     await user.click(regenBtn);
     expect(handleRetry).toHaveBeenCalledWith("a3");
   });
+
+  it("promotes 2-column markdown file tables without fileResults into FileResultsTable with Preview and Open buttons", () => {
+    const assistantMsg: Message = {
+      id: "a-md-files",
+      role: "assistant",
+      capability: "knowledge",
+      text: [
+        "Here are the matching proposal files:",
+        "",
+        "| Document Name | Folder Path |",
+        "| --- | --- |",
+        "| Nanvi_Overnight_Customer_Chat_Support_Proposal.pdf | `Office/Proposal/Customer Support/Nanvi_Overnight_Customer_Chat_Support_Proposal.pdf` |",
+        "| Nanvi_SOC_Monitoring_Support.pdf | `Office/Proposal/SOC Monitoring/USA/Nanvi_SOC_Monitoring_Support.pdf` |",
+      ].join("\n"),
+      createdAt: Date.now(),
+    };
+
+    render(
+      <MessageItem
+        message={assistantMsg}
+        userQuery="show proposal documents"
+        onOpenSource={vi.fn()}
+        onDownload={vi.fn()}
+        onRetry={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("Nanvi_Overnight_Customer_Chat_Support_Proposal.pdf")).toBeInTheDocument();
+    expect(screen.getByText("Office/Proposal/Customer Support/Nanvi_Overnight_Customer_Chat_Support_Proposal.pdf")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /Preview/i }).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByRole("button", { name: /Open/i }).length).toBeGreaterThanOrEqual(2);
+  });
 });

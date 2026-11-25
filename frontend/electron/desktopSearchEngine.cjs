@@ -2222,34 +2222,25 @@ class DesktopSearchEngine {
       const fRes = this._filterEntitiesByNumericQuery(entries, numSpec, offset, 25);
       if (fRes.totalMatching > 0) {
         const bdStr = Object.entries(fRes.breakdown).slice(0, 8).map(([k, v]) => `${k}: ${v}`).join(', ');
-        const bdStr = Object.entries(fRes.breakdown).slice(0, 5).map(([k, v]) => `${k}: ${v}`).join(', ');
         const lblField = fRes.field === 'annualValue' ? 'Annual Value' : 'Salary';
         const lines = [
           `Evaluated ${fRes.totalScannedRecords} unique ${fRes.domain} records across ${entries.size} connected files: ` +
           `found **${fRes.totalMatching} unique ${fRes.domain}** matching your ${lblField.toLowerCase()} condition` +
           (bdStr ? ` (Department/Segment breakdown: ${bdStr})` : '') + '.',
           `Showing ${fRes.rowOffset + 1}–${fRes.rowOffset + fRes.matchedRecords.length} of ${fRes.totalMatching} qualifying ${fRes.domain} (sorted by ${lblField.toLowerCase()}):`,
-          `Found **${fRes.totalMatching} ${fRes.domain}** matching your ${lblField.toLowerCase()} condition` +
-          (bdStr ? ` (${bdStr})` : '') + '.',
         ];
         if (fRes.totalMatching > 5) {
           lines.push('**Key Highlights**');
         }
         const byPath = new Map();
         for (const r of entries.values()) byPath.set(r.fullPath, r);
-        for (const rec of fRes.matchedRecords) {
         for (const rec of fRes.matchedRecords.slice(0, 5)) {
           const valRaw = rec[fRes.field];
           const valStr = Number.isFinite(valRaw) ? valRaw.toLocaleString('en-IN') : (rec.salaryDisplay || rec.valueDisplay || '');
-          const meta = [rec.id, rec.department || rec.segment, rec.role, rec.status].filter(Boolean).join(' · ');
-          const srcRel = rec.files?.[0] ? (byPath.get(rec.files[0])?.relPath || path.basename(rec.files[0])) : '';
-          lines.push(`- **${rec.name || rec.id}** (${meta}) — ${lblField}: **${valStr}**${srcRel ? ` · File: ${srcRel}` : ''}`);
           const metaShort = [rec.id, rec.department || rec.segment].filter(Boolean).join(' · ');
           const srcName = rec.files?.[0] ? path.basename(byPath.get(rec.files[0])?.relPath || rec.files[0]) : '';
           lines.push(`• **${rec.name || rec.id}**${metaShort ? ` (${metaShort})` : ''} · **${valStr}**${srcName ? ` (\`${srcName}\`)` : ''}`);
         }
-        if (fRes.totalMatching > fRes.rowOffset + fRes.matchedRecords.length) {
-          lines.push(`*${fRes.totalMatching - (fRes.rowOffset + fRes.matchedRecords.length)} more qualifying ${fRes.domain} exist — say "I need more" or specify a department (e.g. Engineering, Finance) to narrow down.*`);
         if (fRes.matchedRecords.length > 5) {
           lines.push('');
           lines.push(`| Name | ID | Department | Role | ${lblField} | Source |`);
@@ -2368,16 +2359,12 @@ class DesktopSearchEngine {
             if (!custGroups.has(k)) custGroups.set(k, []);
             custGroups.get(k).push(m);
           }
-          const summaryLines = [`Found **${custGroups.size} unique customers** with unpaid / overdue invoices (**${matchedInvs.length}** total invoice records):`];
-          for (const cname of Array.from(custGroups.keys()).sort()) {
           const summaryLines = [
             `Found **${custGroups.size} customer${custGroups.size !== 1 ? 's' : ''}** with unpaid / overdue invoices (**${matchedInvs.length}** total):`,
           ];
           for (const cname of Array.from(custGroups.keys()).sort().slice(0, 6)) {
             const items = custGroups.get(cname);
             const totalAmt = items.reduce((s, x) => s + (parseNumericAmount(x.amount) || 0), 0);
-            const invDesc = items.slice(0, 6).map((x) => `\`${x.id}\` (${x.status}, ${x.invoiceDate || ''}, ${x.amount})`).join(', ');
-            summaryLines.push(`- **${cname}** — **${items.length}** invoice(s) · Total Due: **${totalAmt > 0 ? totalAmt.toLocaleString('en-IN', { maximumFractionDigits: 2 }) : 'N/A'}** — Invoices: ${invDesc}`);
             const invIds = items.slice(0, 4).map((x) => `\`${x.id}\``).join(', ') + (items.length > 4 ? ` +${items.length - 4} more` : '');
             summaryLines.push(`• **${cname}** — **${items.length}** invoice${items.length !== 1 ? 's' : ''} · Total Due: **${totalAmt > 0 ? totalAmt.toLocaleString('en-IN', { maximumFractionDigits: 2 }) : 'N/A'}** (${invIds})`);
           }
@@ -2394,8 +2381,6 @@ class DesktopSearchEngine {
           structuredSummary = summaryLines.join('\n');
         } else {
           const entLabel = effSpec.entityFilter ? ` for **${effSpec.entityFilter}**` : '';
-          const summaryLines = [`Found **${matchedInvs.length}** verified ${effSpec.statusFilter || ''} ${effSpec.year ? effSpec.year + ' ' : ''}invoice record(s)${entLabel}:`];
-          for (let i = 0; i < matchedInvs.length && i < 25; i++) {
           const statusWord = effSpec.statusFilter === 'paid'
             ? 'paid'
             : (effSpec.statusFilter === 'unpaid_all' ? 'unpaid / overdue' : (effSpec.statusFilter || 'matching'));
@@ -2424,11 +2409,6 @@ class DesktopSearchEngine {
           }
           for (let i = 0; i < matchedInvs.length && i < 5; i++) {
             const inv = matchedInvs[i];
-            const dates = [
-              inv.invoiceDate ? `Invoice Date: ${inv.invoiceDate}` : '',
-              inv.dueDate ? `Due Date: ${inv.dueDate}${inv.daysOverdue ? ` (${inv.daysOverdue}d overdue)` : ''}` : '',
-            ].filter(Boolean).join(' · ');
-            summaryLines.push(`- **${inv.id}** — ${inv.customer} · Amount: **${inv.amount}** · Status: **${inv.status}**${dates ? ' · ' + dates : ''} · File: \`${inv.rec.relPath}\``);
             const amtDisp = fmtInvAmountNode(inv.amount);
             const srcName = path.basename(inv.rec?.relPath || inv.rec?.name || '');
             let dateDisp = '';

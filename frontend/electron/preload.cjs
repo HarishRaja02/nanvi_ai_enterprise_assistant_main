@@ -23,6 +23,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
   openPath: (filePath) => ipcRenderer.invoke('shell:openPath', filePath),
   showItemInFolder: (filePath) => ipcRenderer.invoke('shell:showItemInFolder', filePath),
+  getMicAccessStatus: () => ipcRenderer.invoke('voice:getMicAccessStatus'),
+  requestMicAccess: () => ipcRenderer.invoke('voice:requestMicAccess'),
+  openMicSettings: () => ipcRenderer.invoke('voice:openMicSettings'),
   onAccountBlocked: (callback) => {
     ipcRenderer.on('account-blocked', () => callback());
   },

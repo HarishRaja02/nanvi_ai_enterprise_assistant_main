@@ -15,8 +15,10 @@ import {
 } from "lucide-react";
 import { copyText } from "../../lib/clipboard";
 import { renderInlineMarkdown } from "../../lib/markdown";
+import { extractFileFromTableRow } from "../../lib/fileTableExtractor";
 import { useToast } from "../ui/Toast";
 import { getStoredToken } from "../../lib/session";
+import type { FileResultItem } from "../../types";
 
 export interface TableMetadata {
   filename?: string;
@@ -180,38 +182,26 @@ export function InteractiveTable({ headers, rows, metadata }: Props) {
     }
   };
 
-  const handlePreview = (e?: React.MouseEvent) => {
+  const previewFileItem = (item: FileResultItem, e?: React.MouseEvent) => {
     if (e) {
       e.preventDefault();
       e.stopPropagation();
     }
-    if (!metadata?.filename) return;
-    const targetPath = metadata.folder ? `${metadata.folder}/${metadata.filename}` : metadata.filename;
-    window.dispatchEvent(
-      new CustomEvent("nanvi:preview-file", {
-        detail: {
-          name: metadata.filename,
-          path: targetPath,
-          full_path: targetPath,
-          display_path: targetPath,
-        },
-      })
-    );
+    window.dispatchEvent(new CustomEvent("nanvi:preview-file", { detail: item }));
   };
 
-  const handleOpen = async (e?: React.MouseEvent) => {
+  const openFileItem = async (item: FileResultItem, e?: React.MouseEvent) => {
     if (e) {
       e.preventDefault();
       e.stopPropagation();
     }
-    if (!metadata?.filename) return;
-    const targetPath = metadata.folder ? `${metadata.folder}/${metadata.filename}` : metadata.filename;
+    const targetPath = item.full_path || item.path || item.name;
     await copyText(targetPath);
     try {
       if (typeof window !== "undefined" && (window as any).electronAPI?.openPath) {
         const res = await (window as any).electronAPI.openPath(targetPath);
         if (!res?.error) {
-          notify(`Opened ${metadata.filename} on your computer`, "success");
+          notify(`Opened ${item.name} on your computer`, "success");
           return;
         }
       }
@@ -227,16 +217,54 @@ export function InteractiveTable({ headers, rows, metadata }: Props) {
         if (res.ok) {
           const body = await res.json().catch(() => null);
           if (body?.local || body?.queued) {
-            notify(body?.message || `Opened ${metadata.filename} on your computer`, "success");
+            notify(body?.message || `Opened ${item.name} on your computer`, "success");
             return;
           }
         }
       }
     } catch {
-      // ignore
+      // ignore and fall back to preview dialog
     }
-    handlePreview();
+    previewFileItem(item);
   };
+
+  const handlePreview = (e?: React.MouseEvent) => {
+    if (!metadata?.filename) return;
+    const targetPath = metadata.folder ? `${metadata.folder}/${metadata.filename}` : metadata.filename;
+    previewFileItem(
+      {
+        name: metadata.filename,
+        path: targetPath,
+        full_path: targetPath,
+        display_path: targetPath,
+      },
+      e,
+    );
+  };
+
+  const handleOpen = async (e?: React.MouseEvent) => {
+    if (!metadata?.filename) return;
+    const targetPath = metadata.folder ? `${metadata.folder}/${metadata.filename}` : metadata.filename;
+    await openFileItem(
+      {
+        name: metadata.filename,
+        path: targetPath,
+        full_path: targetPath,
+        display_path: targetPath,
+      },
+      e,
+    );
+  };
+
+  const rowFiles = useMemo(
+    () => sortedRows.map((row) => extractFileFromTableRow(headers, row)),
+    [headers, sortedRows],
+  );
+  const hasRowActions = rowFiles.some(Boolean);
+  const hasExistingActionCol = headers.some((h) =>
+    /^(?:action|actions|open|preview)$/i.test(h.trim()),
+  );
+  const appendActionCol = hasRowActions && !hasExistingActionCol;
 
   const hasFileMeta = Boolean(
     metadata && (metadata.filename || metadata.sheet || metadata.folder)
@@ -395,22 +423,67 @@ export function InteractiveTable({ headers, rows, metadata }: Props) {
                       </th>
                     );
                   })}
+                  {appendActionCol && (
+                    <th scope="col" className="col-action">Action</th>
+                  )}
                 </tr>
               </thead>
               <tbody>
                 {sortedRows.length > 0 ? (
-                  sortedRows.map((row, rIdx) => (
-                    <tr key={rIdx}>
-                      {headers.map((header, cIdx) => (
-                        <td key={cIdx}>
-                          {renderCellContent(row[cIdx] ?? "", cIdx, header)}
-                        </td>
-                      ))}
-                    </tr>
-                  ))
+                  sortedRows.map((row, rIdx) => {
+                    const rowFile = rowFiles[rIdx];
+                    const renderActionPair = (item: FileResultItem) => (
+                      <div className="file-row-actions">
+                        <button
+                          type="button"
+                          className="file-preview-btn"
+                          onClick={(e) => previewFileItem(item, e)}
+                          title={`Preview ${item.name} in browser memory`}
+                        >
+                          <Eye size={13} className="btn-icon" aria-hidden="true" />
+                          <span>Preview</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="file-open-btn"
+                          onClick={(e) => void openFileItem(item, e)}
+                          title={`Open ${item.name} in desktop or browser viewer`}
+                        >
+                          <ExternalLink size={13} className="btn-icon" aria-hidden="true" />
+                          <span>Open</span>
+                        </button>
+                      </div>
+                    );
+                    return (
+                      <tr key={rIdx}>
+                        {headers.map((header, cIdx) => {
+                          const rawCell = (row[cIdx] ?? "").trim();
+                          const isActionCol = /^(?:action|actions|open|preview)$/i.test(header.trim());
+                          const isActionLink = /^\[(?:open|view|preview)\]\(([^)]+)\)$/i.test(rawCell);
+                          if (rowFile && (isActionCol || isActionLink)) {
+                            return (
+                              <td key={cIdx} className="cell-action">
+                                {renderActionPair(rowFile)}
+                              </td>
+                            );
+                          }
+                          return (
+                            <td key={cIdx}>
+                              {renderCellContent(row[cIdx] ?? "", cIdx, header)}
+                            </td>
+                          );
+                        })}
+                        {appendActionCol && (
+                          <td className="cell-action">
+                            {rowFile ? renderActionPair(rowFile) : <span className="text-muted">—</span>}
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })
                 ) : (
                   <tr>
-                    <td colSpan={headers.length} className="table-empty-cell">
+                    <td colSpan={headers.length + (appendActionCol ? 1 : 0)} className="table-empty-cell">
                       No matching records found.
                     </td>
                   </tr>

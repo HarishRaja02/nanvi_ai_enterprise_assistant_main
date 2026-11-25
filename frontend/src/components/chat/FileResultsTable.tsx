@@ -37,6 +37,30 @@ interface Props {
   onOpen?: (file: FileResultItem) => void;
 }
 
+async function fetchDesktopAwareDocumentResponse(exactPath: string): Promise<Response | null> {
+  const isDesktopOrigin =
+    typeof window !== "undefined" &&
+    (window.location.protocol === "file:" ||
+      Boolean((window as any).electronAPI?.isDesktop));
+  const bases = isDesktopOrigin
+    ? ["http://127.0.0.1:8000/api", "https://nanviaienterpriseassistant.vercel.app/api"]
+    : ["/api"];
+  const token = getStoredToken();
+  const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
+  for (const base of bases) {
+    try {
+      const res = await fetch(
+        `${base}/local-agent/document-content?path=${encodeURIComponent(exactPath)}`,
+        { headers },
+      );
+      if (res.ok) return res;
+    } catch {
+      // try next failover origin
+    }
+  }
+  return null;
+}
+
 async function isRealPdfBinary(blob: Blob): Promise<boolean> {
   try {
     const headerBuf = await blob.slice(0, 1024).arrayBuffer();
@@ -315,18 +339,8 @@ export function FileResultsTable({ files, api, userQuery, onOpen }: Props) {
         setBlobUrl(objUrl);
         setBlobMime(formatted.mime);
       } else {
-        const isDesktopOrigin =
-          typeof window !== "undefined" &&
-          (window.location.protocol === "file:" ||
-            Boolean((window as any).electronAPI?.isDesktop));
-        const base = isDesktopOrigin ? "http://127.0.0.1:8000/api" : "/api";
-        const token = getStoredToken();
-        const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
-        const res = await fetch(
-          `${base}/local-agent/document-content?path=${encodeURIComponent(exactPath)}`,
-          { headers }
-        );
-        if (!res.ok) throw new Error("Could not load document into browser memory");
+        const res = await fetchDesktopAwareDocumentResponse(exactPath);
+        if (!res) throw new Error("Could not load document into browser memory");
         const blob = await res.blob();
         const formatted = await formatDocumentBlobIfNeeded(blob, file.name);
         const objUrl = URL.createObjectURL(formatted.blob);
@@ -493,20 +507,10 @@ export function FileResultsTable({ files, api, userQuery, onOpen }: Props) {
         }
       }
 
-      // Source 3: Fetch directly from /local-agent/document-content REST endpoint
+      // Source 3: Fetch directly from /local-agent/document-content REST endpoint (with cloud failover in desktop exe)
       try {
-        const isDesktopOrigin =
-          typeof window !== "undefined" &&
-          (window.location.protocol === "file:" ||
-            Boolean((window as any).electronAPI?.isDesktop));
-        const base = isDesktopOrigin ? "http://127.0.0.1:8000/api" : "/api";
-        const token = getStoredToken();
-        const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
-        const res = await fetch(
-          `${base}/local-agent/document-content?path=${encodeURIComponent(exactPath)}`,
-          { headers }
-        );
-        if (res.ok) {
+        const res = await fetchDesktopAwareDocumentResponse(exactPath);
+        if (res) {
           const resBlob = await res.blob();
           let openBlob: Blob;
           if (isPdfDoc) {

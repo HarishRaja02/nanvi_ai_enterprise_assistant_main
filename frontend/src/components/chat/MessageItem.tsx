@@ -11,6 +11,10 @@ import { BentoMetrics } from "./BentoMetrics";
 import { SourceSelector } from "./SourceSelector";
 import { FileResultsTable } from "./FileResultsTable";
 import { cleanBrowserDisplayPath } from "../../lib/browserFolderSync";
+import {
+  extractFileResultsFromMarkdownTables,
+  stripRedundantFileListingTables,
+} from "../../lib/fileTableExtractor";
 import { generateFollowupSuggestions } from "../../lib/followupSuggestions";
 import { parseSummaryAndExcerpts } from "../../lib/formatExcerpt";
 import { useCountdown } from "../../hooks/useCountdown";
@@ -275,14 +279,23 @@ function MessageItemBase({
       }
     }
 
+    // 3. Extract structured file-listing markdown tables (e.g. | File Name | Folder Path |) when fileResults wasn't provided
+    for (const tblItem of extractFileResultsFromMarkdownTables(message.text || "")) {
+      const key = normalizePathKey(tblItem.full_path || tblItem.path || tblItem.name);
+      if (key && !seen.has(key)) {
+        seen.add(key);
+        derived.push(tblItem);
+      }
+    }
+
     return derived;
   }, [message.fileResults, message.sources, message.text]);
 
-  // Clean summary text to display below file results (strip redundant raw markdown tables only, preserving excerpts & notices)
-  // Clean summary text to display below file results (strip redundant raw markdown tables & duplicate lead-ins)
+  // Clean summary text to display below file results (strip redundant raw markdown file tables & duplicate lead-ins)
   const cleanSummaryText = useMemo(() => {
     if (!message.text) return "";
     let cleaned = message.text.replace(/\r\n?/g, "\n");
+    cleaned = stripRedundantFileListingTables(cleaned);
     cleaned = cleaned.replace(/(?:^|\n)[ \t]*\|[ \t]*File Name[ \t]*\|[ \t]*(?:File Path|Path)[ \t]*\|[^\n]*\n[ \t]*\|[ \t:-]*(?:\|[ \t:-]*)*\|?[ \t]*(?:\n[ \t]*\|[^\n]*)*/gi, "");
     cleaned = cleaned.replace(/(?:^|\n)[ \t]*\|[ \t]*#[ \t]*\|[ \t]*File Name[ \t]*\|[^\n]*\n[ \t]*\|[ \t:-]*(?:\|[ \t:-]*)*\|?[ \t]*(?:\n[ \t]*\|[^\n]*)*/gi, "");
     // Strip redundant "Found N matching documents in Local Storage:" header only when substantive summary text follows (not excerpts-only)

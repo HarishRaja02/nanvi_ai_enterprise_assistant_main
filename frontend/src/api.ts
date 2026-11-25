@@ -911,6 +911,7 @@ export class NanviApiClient {
     const localSummary = String(localCtx.structured_summary || "").trim();
     const isLocalZero = Boolean(localCtx.zero_match) || (localFiles.length === 0 && Boolean(localSummary));
 
+    const resFiles = Array.isArray(res.file_results) ? res.file_results : [];
     const resSources = Array.isArray(res.sources) ? res.sources : [];
     const hasNonLocalSource = resSources.some((s) => {
       const st = String(s.source_type || "").toLowerCase();
@@ -918,7 +919,7 @@ export class NanviApiClient {
     });
     if (hasNonLocalSource) return res;
 
-    let answer = String(res.answer || "");
+    const answer = String(res.answer || "");
     const ansLow = answer.toLowerCase();
     const isGenericLocalTable =
       ansLow.includes("matching document") && ansLow.includes("local storage");
@@ -928,7 +929,19 @@ export class NanviApiClient {
       ansLow.includes("how can i assist") ||
       ansLow.includes("unable to process your request");
 
+    const hasUsefulServerAnswer =
+      resFiles.length > 0 ||
+      resSources.length > 0 ||
+      (!isUnhelpfulBackend && !isGenericLocalTable && answer.trim().length > 0);
+
     if (isLocalZero) {
+      // Never wipe valid server file_results / sources / markdown file tables when another machine lacks the local folder.
+      if (hasUsefulServerAnswer && !localSummary) {
+        return res;
+      }
+      if (resFiles.length > 0 || resSources.length > 0) {
+        return res;
+      }
       const stats = localCtx.folder_stats;
       const cats = stats?.categories
         ? Object.entries(stats.categories).slice(0, 8).map(([k, v]) => `${k} (${v})`).join(", ")
@@ -947,12 +960,6 @@ export class NanviApiClient {
 
     if (localSummary && (isGenericLocalTable || isUnhelpfulBackend || !answer.trim())) {
       const excerptMarker = /\*\*Relevant Document Excerpts:?\*\*/i;
-      let nextAnswer = isGenericLocalTable
-        ? answer.replace(excerptMarker, `${localSummary}\n\n**Relevant Document Excerpts**`)
-        : localSummary;
-      if (isGenericLocalTable && !excerptMarker.test(answer)) {
-        nextAnswer = `${answer.trim()}\n\n${localSummary}`;
-      }
       const hasMoreLine = localCtx.has_more && typeof localCtx.total_matches === "number"
         ? `\n\n💡 **${Math.max(0, localCtx.total_matches - ((localCtx.offset || 0) + localFiles.length))} more matching files available.** Say **"I need more"** or **"next set"** to load the next batch.`
         : "";
@@ -963,7 +970,7 @@ export class NanviApiClient {
       };
     }
 
-    if (localFiles.length > 0 && (!res.file_results || res.file_results.length > localFiles.length)) {
+    if (localFiles.length > 0 && (!res.file_results || res.file_results.length === 0)) {
       return { ...res, file_results: localFiles };
     }
     return res;
@@ -1639,7 +1646,7 @@ export class NanviApiClient {
 
   voiceTranscribe(audioBase64: string, mimeType: string = "audio/webm", filename: string = "recording.webm") {
 
-    return this.request<{ text: string; confidence: number }>("/voice/transcribe", {
+    return this.request<{ text: string; confidence: number; no_speech?: boolean; reason?: string }>("/voice/transcribe", {
 
       method: "POST",
 

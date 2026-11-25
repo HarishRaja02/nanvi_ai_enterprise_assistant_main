@@ -2707,6 +2707,294 @@ export async function syncBrowserDirectory(
   };
 }
 
+export type DroppedFolderFilePreview = {
+  relativePath: string;
+  name: string;
+  size: number;
+  ext: string;
+  supported: boolean;
+  file: File;
+};
+
+export type DroppedFolderCandidate = {
+  folderName: string;
+  files: DroppedFolderFilePreview[];
+  supportedCount: number;
+  skippedCount: number;
+  totalSizeBytes: number;
+};
+
+function isIgnoredRelativeSegments(segments: string[]): boolean {
+  return segments.some((seg, idx) => {
+    if (idx < segments.length - 1) {
+      return seg.startsWith(".") || IGNORED_DIRS.has(seg.toLowerCase());
+    }
+    return seg.startsWith(".") || seg.startsWith("~$");
+  });
+}
+
+function registerSessionFolderFile(folderName: string, relativePath: string, file: File): void {
+  sessionFileMap.set(relativePath, file);
+  sessionFileMap.set(`${folderName}/${relativePath}`, file);
+  sessionFileMap.set(file.name.toLowerCase(), file);
+}
+
+function clearSessionFolderEntries(folderName: string): void {
+  const folderPrefix = `${folderName}/`.toLowerCase();
+  const folderBackslashPrefix = `${folderName}\\`.toLowerCase();
+  for (const [k] of Array.from(sessionFileMap.entries())) {
+    const lower = k.toLowerCase();
+    if (lower.startsWith(folderPrefix) || lower.startsWith(folderBackslashPrefix)) {
+      sessionFileMap.delete(k);
+    }
+  }
+}
+
+type WebkitEntryLike = {
+  isFile: boolean;
+  isDirectory: boolean;
+  name: string;
+  fullPath?: string;
+  file?: (success: (file: File) => void, error?: (err: unknown) => void) => void;
+  createReader?: () => {
+    readEntries: (success: (entries: WebkitEntryLike[]) => void, error?: (err: unknown) => void) => void;
+  };
+};
+
+async function readAllDirectoryEntries(dirEntry: WebkitEntryLike): Promise<WebkitEntryLike[]> {
+  if (!dirEntry.createReader) return [];
+  const reader = dirEntry.createReader();
+  const all: WebkitEntryLike[] = [];
+  while (true) {
+    const batch = await new Promise<WebkitEntryLike[]>((resolve, reject) => {
+      reader.readEntries(resolve, reject);
+    });
+    if (!batch || batch.length === 0) break;
+    all.push(...batch);
+  }
+  return all;
+}
+
+async function readEntryAsFile(fileEntry: WebkitEntryLike): Promise<File | null> {
+  if (!fileEntry.file) return null;
+  return await new Promise<File | null>((resolve) => {
+    try {
+      fileEntry.file!(
+        (f) => resolve(f),
+        () => resolve(null),
+      );
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+async function collectDroppedDirectoryFiles(
+  rootEntry: WebkitEntryLike,
+): Promise<DroppedFolderFilePreview[]> {
+  const fileTasks: Array<{ relativePath: string; entry: WebkitEntryLike }> = [];
+
+  const walk = async (entry: WebkitEntryLike, prefix: string): Promise<void> => {
+    const name = entry.name || "";
+    if (!name || name.startsWith(".") || name.startsWith("~$")) {
+      return;
+    }
+    if (entry.isDirectory) {
+      if (IGNORED_DIRS.has(name.toLowerCase())) {
+        return;
+      }
+      const children = await readAllDirectoryEntries(entry);
+      for (const child of children) {
+        const childPrefix = prefix ? `${prefix}/${child.name}` : child.name;
+        await walk(child, childPrefix);
+      }
+      return;
+    }
+    if (entry.isFile) {
+      const rel = prefix || name;
+      fileTasks.push({ relativePath: rel, entry });
+    }
+  };
+
+  const topChildren = await readAllDirectoryEntries(rootEntry);
+  for (const child of topChildren) {
+    await walk(child, child.name);
+  }
+
+  const results: DroppedFolderFilePreview[] = new Array(fileTasks.length);
+  let cursor = 0;
+  const workerCount = Math.min(12, Math.max(1, fileTasks.length));
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (true) {
+        const idx = cursor++;
+        if (idx >= fileTasks.length) break;
+        const task = fileTasks[idx];
+        const file = await readEntryAsFile(task.entry);
+        if (!file) {
+          continue;
+        }
+        const ext = getExt(file.name);
+        const supported =
+          SUPPORTED_EXTENSIONS.has(ext) && file.size > 0 && file.size <= MAX_FILE_SIZE_BYTES;
+        results[idx] = {
+          relativePath: task.relativePath,
+          name: file.name,
+          size: file.size,
+          ext,
+          supported,
+          file,
+        };
+      }
+    }),
+  );
+
+  return results.filter(Boolean);
+}
+
+/**
+ * Extracts dropped folders and loose files synchronously from a DataTransfer event
+ * before the browser invalidates `dataTransfer.items`. Works across Chrome, Edge,
+ * Brave, Firefox (50+), and Safari (11.1+) with zero browser upload confirmation popup.
+ */
+export async function extractDroppedFoldersFromDataTransfer(
+  dataTransfer: DataTransfer | null | undefined,
+): Promise<DroppedFolderCandidate[]> {
+  if (!dataTransfer) return [];
+
+  // Synchronously snapshot DataTransfer items BEFORE any await
+  const entries: WebkitEntryLike[] = [];
+  const looseFiles: File[] = [];
+
+  const rawItems = Array.from(dataTransfer.items || []);
+  for (const item of rawItems) {
+    if (item.kind && item.kind !== "file") continue;
+    const getAsEntry = (item as DataTransferItem & { webkitGetAsEntry?: () => WebkitEntryLike | null }).webkitGetAsEntry;
+    const entry = typeof getAsEntry === "function" ? getAsEntry.call(item) : null;
+    if (entry) {
+      entries.push(entry);
+    } else if (typeof item.getAsFile === "function") {
+      const file = item.getAsFile();
+      if (file) looseFiles.push(file);
+    }
+  }
+
+  if (entries.length === 0 && looseFiles.length === 0 && dataTransfer.files) {
+    looseFiles.push(...Array.from(dataTransfer.files));
+  }
+
+  const candidates: DroppedFolderCandidate[] = [];
+
+  for (const entry of entries) {
+    if (entry.isDirectory) {
+      const folderName = entry.name || "Local Folder";
+      const previews = await collectDroppedDirectoryFiles(entry);
+      const supported = previews.filter((p) => p.supported);
+      candidates.push({
+        folderName,
+        files: previews,
+        supportedCount: supported.length,
+        skippedCount: previews.length - supported.length,
+        totalSizeBytes: supported.reduce((sum, p) => sum + p.size, 0),
+      });
+    } else if (entry.isFile) {
+      const file = await readEntryAsFile(entry);
+      if (file) looseFiles.push(file);
+    }
+  }
+
+  if (looseFiles.length > 0) {
+    const loosePreviews: DroppedFolderFilePreview[] = [];
+    for (const file of looseFiles) {
+      if (file.name.startsWith(".") || file.name.startsWith("~$")) continue;
+      const ext = getExt(file.name);
+      const supported =
+        SUPPORTED_EXTENSIONS.has(ext) && file.size > 0 && file.size <= MAX_FILE_SIZE_BYTES;
+      loosePreviews.push({
+        relativePath: file.name,
+        name: file.name,
+        size: file.size,
+        ext,
+        supported,
+        file,
+      });
+    }
+    if (loosePreviews.length > 0) {
+      const supported = loosePreviews.filter((p) => p.supported);
+      candidates.push({
+        folderName: "Dropped Files",
+        files: loosePreviews,
+        supportedCount: supported.length,
+        skippedCount: loosePreviews.length - supported.length,
+        totalSizeBytes: supported.reduce((sum, p) => sum + p.size, 0),
+      });
+    }
+  }
+
+  return candidates;
+}
+
+export async function syncDroppedFolder(
+  api: NanviApiClient,
+  candidate: DroppedFolderCandidate,
+  onProgress?: (p: BrowserSyncProgress) => void,
+  options?: BrowserSyncOptions,
+): Promise<BrowserSyncResult | null> {
+  const folderName = (candidate.folderName || "Local Folder").trim() || "Local Folder";
+  const supportedItems = candidate.files.filter((f) => f.supported);
+  if (supportedItems.length === 0) return null;
+
+  return await runExclusiveSync(async () => {
+    activeDirectoryHandle = null;
+    desktopAbsPathMap.clear();
+    clearSessionFolderEntries(folderName);
+
+    onProgress?.({
+      phase: "scanning",
+      scannedFiles: 0,
+      indexedFiles: 0,
+      totalFiles: supportedItems.length,
+      totalChunks: 0,
+      message: `Preparing '${folderName}' (${supportedItems.length} files)...`,
+    });
+
+    const validFiles: CollectedBrowserFile[] = [];
+    const nextSnapshot = new Map<string, number>();
+    const nextPaths = new Set<string>();
+
+    for (const item of supportedItems) {
+      const relativePath = item.relativePath.replace(/\\/g, "/");
+      nextPaths.add(relativePath);
+      nextSnapshot.set(relativePath, item.file.lastModified);
+      registerSessionFolderFile(folderName, relativePath, item.file);
+      validFiles.push({ relativePath, file: item.file });
+    }
+
+    return await syncCollectedFiles(
+      api,
+      {
+        folderName,
+        agentVersion: "browser-drop-1.0.0",
+        totalFiles: nextPaths.size,
+        validFiles,
+        allKnownPaths: nextPaths,
+        snapshotMap: nextSnapshot,
+        dirHandle: null,
+      },
+      onProgress,
+      options,
+    );
+  });
+}
+
+export async function getCachedFolderFilesPreview(folderName: string): Promise<BrowserFileMeta[]> {
+  const cached = await getCachedFolderIndex(folderName);
+  if (!cached?.entries) return [];
+  return Object.values(cached.entries)
+    .map((e) => e.fileRecord)
+    .sort((a, b) => a.relative_path.localeCompare(b.relative_path));
+}
+
 export async function syncWebkitFileList(
   api: NanviApiClient,
   files: FileList | File[],
@@ -2726,15 +3014,7 @@ export async function syncWebkitFileList(
       detectedFolderName = firstRel.split("/")[0] || "Local Folder";
     }
 
-    // Clean up previous session entries for this specific folder, but preserve other folders
-    const folderPrefix = `${detectedFolderName}/`.toLowerCase();
-    const folderBackslashPrefix = `${detectedFolderName}\\`.toLowerCase();
-    for (const [k] of Array.from(sessionFileMap.entries())) {
-      const lower = k.toLowerCase();
-      if (lower.startsWith(folderPrefix) || lower.startsWith(folderBackslashPrefix)) {
-        sessionFileMap.delete(k);
-      }
-    }
+    clearSessionFolderEntries(detectedFolderName);
 
     onProgress?.({
       phase: "scanning",
@@ -2755,12 +3035,7 @@ export async function syncWebkitFileList(
       const relParts = parts.length > 1 && parts[0] === detectedFolderName ? parts.slice(1) : parts;
       if (relParts.length === 0) continue;
 
-      if (relParts.some((seg, idx) => {
-        if (idx < relParts.length - 1) {
-          return seg.startsWith(".") || IGNORED_DIRS.has(seg.toLowerCase());
-        }
-        return seg.startsWith(".") || seg.startsWith("~$");
-      })) {
+      if (isIgnoredRelativeSegments(relParts)) {
         continue;
       }
 
@@ -2770,10 +3045,7 @@ export async function syncWebkitFileList(
       const relativePath = relParts.join("/");
       nextPaths.add(relativePath);
       nextSnapshot.set(relativePath, file.lastModified);
-      // Index under relativePath, under folderName/relativePath, and by base filename
-      sessionFileMap.set(relativePath, file);
-      sessionFileMap.set(`${detectedFolderName}/${relativePath}`, file);
-      sessionFileMap.set(file.name.toLowerCase(), file);
+      registerSessionFolderFile(detectedFolderName, relativePath, file);
 
       if (file.size > 0 && file.size <= MAX_FILE_SIZE_BYTES) {
         validFiles.push({ relativePath, file });

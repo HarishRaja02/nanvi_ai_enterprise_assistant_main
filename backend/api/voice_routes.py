@@ -715,6 +715,97 @@ def voice_stream(
 
 import base64
 
+_WHISPER_HALLUCINATION_EXACT = frozenset({
+    "thank you for watching",
+    "thanks for watching",
+    "thank you very much for watching",
+    "thank you so much for watching",
+    "thanks for watching this video",
+    "thanks for watching my video",
+    "thank you for listening",
+    "thanks for listening",
+    "please subscribe",
+    "subscribe",
+    "like and subscribe",
+    "please like and subscribe",
+    "subscribe to my channel",
+    "see you in the next video",
+    "see you next time",
+    "bye bye",
+    "mbc",
+    "amara org",
+})
+
+_WHISPER_HALLUCINATION_PATTERNS = (
+    re.compile(r"\bthank(?:s|\s+you)\b(?:\s+(?:very|so)\s+much)?\s+for\s+(?:watching|listening)\b", re.IGNORECASE),
+    re.compile(r"\b(?:subtitles|captions|transcribed)\s+by\b", re.IGNORECASE),
+    re.compile(r"\bamara\.org\b", re.IGNORECASE),
+    re.compile(r"\b(?:don'?t\s+forget\s+to\s+subscribe|like\s+and\s+subscribe|subscribe\s+to\s+(?:my|our)\s+channel)\b", re.IGNORECASE),
+)
+
+_SILENCE_MICRO_HALLUCINATIONS = frozenset({
+    "thank you",
+    "thanks",
+    "you",
+    "bye",
+    "goodbye",
+    "okay",
+    "ok",
+    "oh",
+    "uh",
+    "um",
+    "hmm",
+    "mm",
+})
+
+
+def filter_whisper_transcript(
+    raw_text: str,
+    res_data: dict[str, Any] | None = None,
+) -> tuple[str, bool, str | None]:
+    """Suppress Whisper silence/outro hallucinations (e.g. 'Thank you for watching!') and empty noise.
+
+    Returns (filtered_text, is_no_speech, reason).
+    """
+    text = str(raw_text or "").strip()
+    if not text:
+        return "", True, "empty_transcript"
+
+    normalized = re.sub(r"[^\w\s]", " ", text.lower())
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    if not normalized:
+        return "", True, "non_speech_punctuation"
+
+    if normalized in _WHISPER_HALLUCINATION_EXACT:
+        return "", True, "whisper_silence_hallucination"
+
+    for pat in _WHISPER_HALLUCINATION_PATTERNS:
+        if pat.search(text) and len(normalized.split()) <= 12:
+            return "", True, "whisper_outro_hallucination"
+
+    segments = res_data.get("segments") if isinstance(res_data, dict) else None
+    if isinstance(segments, list) and segments:
+        no_speech_probs = [
+            float(seg.get("no_speech_prob"))
+            for seg in segments
+            if isinstance(seg, dict) and seg.get("no_speech_prob") is not None
+        ]
+        avg_logprobs = [
+            float(seg.get("avg_logprob"))
+            for seg in segments
+            if isinstance(seg, dict) and seg.get("avg_logprob") is not None
+        ]
+        if no_speech_probs and all(p >= 0.82 for p in no_speech_probs):
+            return "", True, "high_no_speech_probability"
+        if normalized in _SILENCE_MICRO_HALLUCINATIONS:
+            low_conf = bool(avg_logprobs and min(avg_logprobs) <= -1.0)
+            high_sil = bool(no_speech_probs and max(no_speech_probs) >= 0.65)
+            if low_conf or high_sil:
+                return "", True, "low_confidence_silence_phrase"
+
+    return text, False, None
+
+
 class TranscribeBody(BaseModel):
     audio_base64: str = Field(min_length=1)
     mime_type: str = Field(default="audio/webm")
@@ -748,7 +839,7 @@ async def voice_transcribe(
     files = {"file": (body.filename, content, body.mime_type)}
     data = {
         "model": "whisper-large-v3",
-        "response_format": "json",
+        "response_format": "verbose_json",
         "language": "en",
         "prompt": WHISPER_BIASING_PROMPT,
     }
@@ -766,9 +857,22 @@ async def voice_transcribe(
                 logger.error("Groq Whisper transcription failed: %s %s", resp.status_code, resp.text)
                 raise HTTPException(status_code=502, detail="Audio transcription failed.")
             res_data = resp.json()
-            raw_text = res_data.get("text", "").strip()
-            corrected_text = apply_phonetic_corrections(raw_text)
-            return {"text": corrected_text, "confidence": 1.0}
+            raw_text = str(res_data.get("text", "") or "").strip()
+            filtered_text, is_no_speech, reason = filter_whisper_transcript(raw_text, res_data)
+            if is_no_speech:
+                logger.info("Suppressed Whisper non-speech/hallucination output (%s): %r", reason, raw_text)
+                return {
+                    "text": "",
+                    "confidence": 0.0,
+                    "no_speech": True,
+                    "reason": reason,
+                }
+            corrected_text = apply_phonetic_corrections(filtered_text)
+            return {
+                "text": corrected_text,
+                "confidence": 1.0,
+                "no_speech": False,
+            }
     except httpx.RequestError as exc:
         logger.error("Groq Whisper connection error: %s", exc)
         raise HTTPException(status_code=503, detail="Audio transcription service unreachable.")

@@ -1,24 +1,29 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 import type { NanviApiClient, LocalAgentStatusResponse } from "../../api";
 import { useToast } from "./Toast";
+import { FolderConnectModal, type PreviewableFolderFile } from "./FolderConnectModal";
 import {
   autoRestoreBrowserFolderIfGranted,
   cancelPendingBrowserFolderPicker,
   clearDesktopLocalFolder,
   clearSavedBrowserDirectoryHandle,
   connectDesktopFolderDirect,
+  extractDroppedFoldersFromDataTransfer,
   getAllCachedFolderNames,
   getBrowserFolderMode,
   getBrowserFolderRealPath,
   getCachedBrowserIndexSummary,
+  getCachedFolderFilesPreview,
   getDesktopLocalStatus,
   getLastCachedFolderName,
   getSavedBrowserHandleInfo,
   pickAndSyncBrowserFolder,
   reconnectSavedBrowserFolder,
   setBrowserFolderRealPath,
+  syncDroppedFolder,
   syncElectronFolder,
   type BrowserSyncProgress,
+  type DroppedFolderCandidate,
 } from "../../lib/browserFolderSync";
 
 type Props = {
@@ -55,6 +60,14 @@ export function CompanyFolderPicker({ api }: Props) {
   const [disconnectingId, setDisconnectingId] = useState<string | null>(null);
   const [addFolderMsg, setAddFolderMsg] = useState<string | null>(null);
   const [browserRealPathInput, setBrowserRealPathInput] = useState("");
+  const [folderModalOpen, setFolderModalOpen] = useState(false);
+  const [folderModalMode, setFolderModalMode] = useState<"connect" | "preview">("connect");
+  const [droppedCandidates, setDroppedCandidates] = useState<DroppedFolderCandidate[]>([]);
+  const [confirmingDropConnect, setConfirmingDropConnect] = useState(false);
+  const [cardDragOver, setCardDragOver] = useState(false);
+  const [previewTarget, setPreviewTarget] = useState<{ name: string; path: string }>({ name: "", path: "" });
+  const [previewFiles, setPreviewFiles] = useState<PreviewableFolderFile[]>([]);
+  const [previewLoading, setPreviewLoading] = useState(false);
 
   const rapidPollRef = useRef<number | null>(null);
   const lastDispatchedRef = useRef<string>("");
@@ -578,6 +591,94 @@ export function CompanyFolderPicker({ api }: Props) {
     }
   };
 
+  const runBrowserDevicePicker = async () => {
+    // Direct Browser Folder Access (Chrome/Edge File System API + Firefox/Safari webkitdirectory)
+    if (browserSupported) {
+      setBrowsingFolder(true);
+      setAddFolderMsg(null);
+      if (browserMode === "webkitdirectory" || browserMode === "file-picker") {
+        setBrowserSyncProgress({
+          phase: "scanning",
+          scannedFiles: 0,
+          indexedFiles: 0,
+          totalFiles: 0,
+          totalChunks: 0,
+          message:
+            browserMode === "webkitdirectory"
+              ? "Select your folder, then click 'Upload' if your browser asks to confirm..."
+              : "Select documents from Apple Files or iCloud Drive...",
+        });
+      } else {
+        setBrowserSyncProgress(null);
+      }
+      try {
+        const result = await pickAndSyncBrowserFolder(api, undefined, { background: true });
+        setBrowserSyncProgress(null);
+        if (!result) {
+          setAddFolderMsg("Folder selection was canceled.");
+          return;
+        }
+        const effectivePath = getBrowserFolderRealPath(result.folderName) || result.folderName;
+        setSavedBrowserFolder({
+          name: result.folderName,
+          permission: "granted",
+          cachedFiles: result.fileCount,
+        });
+        applyOptimisticConnectedFolder(
+          result.folderId,
+          effectivePath,
+          result.folderName,
+          result.fileCount,
+          result.chunkCount,
+        );
+        setFolderModalOpen(false);
+        setDroppedCandidates([]);
+        setAddFolderMsg(
+          `✓ Connected '${result.folderName}' (${result.fileCount} files) — Ready to search.`,
+        );
+        notify(`Connected folder '${result.folderName}' (${result.fileCount} files).`, "success");
+        void fetchStatus();
+        triggerRapidPoll();
+      } catch (err: any) {
+        setBrowserSyncProgress(null);
+        const errMsg = err?.message || "Please grant folder permission or use Method 2 (Manual Path Input).";
+        setAddFolderMsg(`Error accessing folder: ${errMsg}`);
+        notify(`Error accessing folder: ${errMsg}`, "danger");
+      } finally {
+        setBrowsingFolder(false);
+      }
+      return;
+    }
+
+    // Fallback for environments without browser picker: backend / remote agent dialog
+    setBrowsingFolder(true);
+    setAddFolderMsg(null);
+    try {
+      const res = await api.browseLocalFolder();
+      if (res.status === "ok" && res.folder_path) {
+        setCustomLocalFolder(res.folder_path);
+        setFolderModalOpen(false);
+        setAddFolderMsg(res.message || `✓ Folder '${res.folder_path}' linked to Nanvi Assistant.`);
+        window.dispatchEvent(
+          new CustomEvent("nanvi:company-folder-updated", {
+            detail: { path: res.folder_path, exists: true, folder_count: 1, file_count: (res as any).file_count || 1 },
+          })
+        );
+        await fetchStatus();
+        triggerRapidPoll();
+      } else if (res.status === "canceled") {
+        setAddFolderMsg(res.message || "Folder selection was canceled.");
+      } else {
+        setAddFolderMsg(res.message || "✓ Windows Explorer Folder Picker launched. Please choose your folder.");
+        triggerRapidPoll();
+      }
+    } catch (err: any) {
+      setAddFolderMsg(`Error opening folder browser: ${err?.message || "Failed to trigger folder browser. Please use Method 2 (Manual Path Input)."}`);
+    } finally {
+      setTimeout(() => setBrowsingFolder(false), 2000);
+    }
+  };
+
   const handleBrowseFolder = async () => {
     // 1. Native Desktop File Picker (when running in Electron Desktop Application)
     if (typeof window !== "undefined" && window.electronAPI?.selectFolder) {
@@ -604,32 +705,76 @@ export function CompanyFolderPicker({ api }: Props) {
       return;
     }
 
-    // 2. Direct Browser Folder Access (Chrome/Edge File System API + Firefox/Safari webkitdirectory)
+    // 2. Web / Vercel: Open Nanvi's Drag & Drop + File Preview Confirmation Modal (zero browser upload warning)
     if (browserSupported) {
-      setBrowsingFolder(true);
       setAddFolderMsg(null);
-      if (browserMode === "webkitdirectory" || browserMode === "file-picker") {
-        setBrowserSyncProgress({
-          phase: "scanning",
-          scannedFiles: 0,
-          indexedFiles: 0,
-          totalFiles: 0,
-          totalChunks: 0,
-          message:
-            browserMode === "webkitdirectory"
-              ? "Select your folder, then click 'Upload' if Firefox/Safari asks to confirm..."
-              : "Select documents from Apple Files or iCloud Drive...",
-        });
-      } else {
-        setBrowserSyncProgress(null);
+      setDroppedCandidates([]);
+      setFolderModalMode("connect");
+      setFolderModalOpen(true);
+      return;
+    }
+
+    await runBrowserDevicePicker();
+  };
+
+  const handleCardDragOver = (e: DragEvent<HTMLDivElement>) => {
+    if (isDesktop) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = "copy";
+    }
+    if (!cardDragOver) setCardDragOver(true);
+  };
+
+  const handleCardDragLeave = (e: DragEvent<HTMLDivElement>) => {
+    if (isDesktop) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const nextTarget = e.relatedTarget as Node | null;
+    if (!nextTarget || !e.currentTarget.contains(nextTarget)) {
+      setCardDragOver(false);
+    }
+  };
+
+  const handleCardDrop = async (e: DragEvent<HTMLDivElement>) => {
+    if (isDesktop) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setCardDragOver(false);
+    try {
+      const candidates = await extractDroppedFoldersFromDataTransfer(e.dataTransfer);
+      if (candidates.length === 0) {
+        setAddFolderMsg("No folder or files were detected. Drag a folder directly from Explorer or Finder.");
+        return;
       }
-      try {
-        const result = await pickAndSyncBrowserFolder(api, undefined, { background: true });
-        setBrowserSyncProgress(null);
-        if (!result) {
-          setAddFolderMsg("Folder selection was canceled.");
-          return;
-        }
+      setDroppedCandidates(candidates);
+      setFolderModalMode("connect");
+      setFolderModalOpen(true);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Could not read dropped folder.";
+      setAddFolderMsg(msg);
+      notify(msg, "danger");
+    }
+  };
+
+  const handleConfirmDroppedConnect = async (candidates: DroppedFolderCandidate[]) => {
+    const validCandidates = candidates.filter((c) => c.supportedCount > 0);
+    if (validCandidates.length === 0) return;
+
+    setConfirmingDropConnect(true);
+    setAddFolderMsg(null);
+    let connectedCount = 0;
+    let totalIndexedFiles = 0;
+    let lastConnectedName = "";
+
+    try {
+      for (const candidate of validCandidates) {
+        const result = await syncDroppedFolder(api, candidate, undefined, { background: true });
+        if (!result) continue;
+        connectedCount++;
+        totalIndexedFiles += result.fileCount;
+        lastConnectedName = result.folderName;
         const effectivePath = getBrowserFolderRealPath(result.folderName) || result.folderName;
         setSavedBrowserFolder({
           name: result.folderName,
@@ -643,48 +788,73 @@ export function CompanyFolderPicker({ api }: Props) {
           result.fileCount,
           result.chunkCount,
         );
-        setAddFolderMsg(
-          `✓ Connected '${result.folderName}' (${result.fileCount} files) — Ready to search.`,
-        );
-        notify(`Connected folder '${result.folderName}' (${result.fileCount} files).`, "success");
+      }
+
+      if (connectedCount > 0) {
+        const summaryMsg =
+          connectedCount === 1
+            ? `✓ Connected '${lastConnectedName}' (${totalIndexedFiles} files) — Ready to search.`
+            : `✓ Connected ${connectedCount} folders (${totalIndexedFiles} files) — Ready to search.`;
+        setAddFolderMsg(summaryMsg);
+        notify(summaryMsg.replace(/^✓\s*/, ""), "success");
+        setFolderModalOpen(false);
+        setDroppedCandidates([]);
         void fetchStatus();
         triggerRapidPoll();
-      } catch (err: any) {
-        setBrowserSyncProgress(null);
-        const errMsg = err?.message || "Please grant folder permission or use Method 2 (Manual Path Input).";
-        setAddFolderMsg(`Error accessing folder: ${errMsg}`);
-        notify(`Error accessing folder: ${errMsg}`, "danger");
-      } finally {
-        setBrowsingFolder(false);
-      }
-      return;
-    }
-
-    // 3. Fallback for browsers without showDirectoryPicker (Firefox / Safari): backend / remote agent dialog
-    setBrowsingFolder(true);
-    setAddFolderMsg(null);
-    try {
-      const res = await api.browseLocalFolder();
-      if (res.status === "ok" && res.folder_path) {
-        setCustomLocalFolder(res.folder_path);
-        setAddFolderMsg(res.message || `✓ Folder '${res.folder_path}' linked to Nanvi Assistant.`);
-        window.dispatchEvent(
-          new CustomEvent("nanvi:company-folder-updated", {
-            detail: { path: res.folder_path, exists: true, folder_count: 1, file_count: (res as any).file_count || 1 },
-          })
-        );
-        await fetchStatus();
-        triggerRapidPoll();
-      } else if (res.status === "canceled") {
-        setAddFolderMsg(res.message || "Folder selection was canceled.");
       } else {
-        setAddFolderMsg(res.message || "✓ Windows Explorer Folder Picker launched. Please choose your folder.");
-        triggerRapidPoll();
+        setAddFolderMsg("No supported files were found to connect.");
       }
-    } catch (err: any) {
-      setAddFolderMsg(`Error opening folder browser: ${err?.message || "Failed to trigger folder browser. Please use Method 2 (Manual Path Input)."}`);
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : "Failed to connect dropped folder.";
+      setAddFolderMsg(`Error accessing folder: ${errMsg}`);
+      notify(`Error accessing folder: ${errMsg}`, "danger");
     } finally {
-      setTimeout(() => setBrowsingFolder(false), 2000);
+      setConfirmingDropConnect(false);
+    }
+  };
+
+  const handlePreviewConnectedFolder = async (folder: NonNullable<typeof agentStatus>["connected_folders"][number]) => {
+    const folderName = folder.display_name || folder.folder_path.split(/[/\\]/).pop() || folder.folder_path;
+    const folderPath = folder.folder_path || folderName;
+    setPreviewTarget({ name: folderName, path: folderPath });
+    setPreviewFiles([]);
+    setPreviewLoading(true);
+    setFolderModalMode("preview");
+    setFolderModalOpen(true);
+
+    try {
+      if (isDesktop && window.electronAPI?.listFolderFiles && folderPath) {
+        const entries = await window.electronAPI.listFolderFiles(folderPath);
+        setPreviewFiles(
+          (entries || []).map((e) => ({
+            relativePath: e.relativePath,
+            filename: e.name,
+            fileType: e.name.split(".").pop() || "file",
+            sizeBytes: e.size,
+          })),
+        );
+      } else {
+        const lookupKeys = Array.from(new Set([folderName, folderPath.replace(/^browser:\/\//, "")].filter(Boolean)));
+        let found: PreviewableFolderFile[] = [];
+        for (const key of lookupKeys) {
+          const cached = await getCachedFolderFilesPreview(key);
+          if (cached.length > 0) {
+            found = cached.map((m) => ({
+              relativePath: m.relative_path,
+              filename: m.filename,
+              fileType: m.file_type,
+              sizeBytes: m.size_bytes,
+              chunkCount: m.chunk_count,
+            }));
+            break;
+          }
+        }
+        setPreviewFiles(found);
+      }
+    } catch {
+      setPreviewFiles([]);
+    } finally {
+      setPreviewLoading(false);
     }
   };
 
@@ -972,47 +1142,80 @@ export function CompanyFolderPicker({ api }: Props) {
                     </div>
                   </div>
 
-                  <button
-                    type="button"
-                    className="folder-picker-btn"
-                    style={{
-                      background: "#fee2e2",
-                      color: "#b91c1c",
-                      border: "1.5px solid #fca5a5",
-                      fontSize: "0.86rem",
-                      fontWeight: 700,
-                      padding: "9px 18px",
-                      borderRadius: "8px",
-                      cursor: isRemoving ? "wait" : "pointer",
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: "6px",
-                      boxShadow: "0 1px 4px rgba(220, 38, 38, 0.12)",
-                      transition: "all 0.15s ease",
-                    }}
-                    onClick={() => handleDisconnectFolder(targetId)}
-                    disabled={isRemoving}
-                    title="Disconnect this folder from Nanvi Assistant"
-                  >
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                      <polyline points="3 6 5 6 21 6" />
-                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                    </svg>
-                    {isRemoving ? "Removing..." : "Remove / Disconnect"}
-                  </button>
+                  <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+                    <button
+                      type="button"
+                      className="folder-picker-btn"
+                      style={{
+                        background: "#ffffff",
+                        color: "#0369a1",
+                        border: "1.5px solid #bae6fd",
+                        fontSize: "0.86rem",
+                        fontWeight: 700,
+                        padding: "9px 14px",
+                        borderRadius: "8px",
+                        cursor: "pointer",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "6px",
+                        transition: "all 0.15s ease",
+                      }}
+                      onClick={() => void handlePreviewConnectedFolder(folder)}
+                      title="Preview files inside this connected folder"
+                    >
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                        <circle cx="12" cy="12" r="3" />
+                      </svg>
+                      Preview Files
+                    </button>
+
+                    <button
+                      type="button"
+                      className="folder-picker-btn"
+                      style={{
+                        background: "#fee2e2",
+                        color: "#b91c1c",
+                        border: "1.5px solid #fca5a5",
+                        fontSize: "0.86rem",
+                        fontWeight: 700,
+                        padding: "9px 18px",
+                        borderRadius: "8px",
+                        cursor: isRemoving ? "wait" : "pointer",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "6px",
+                        boxShadow: "0 1px 4px rgba(220, 38, 38, 0.12)",
+                        transition: "all 0.15s ease",
+                      }}
+                      onClick={() => handleDisconnectFolder(targetId)}
+                      disabled={isRemoving}
+                      title="Disconnect this folder from Nanvi Assistant"
+                    >
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="3 6 5 6 21 6" />
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                      </svg>
+                      {isRemoving ? "Removing..." : "Remove / Disconnect"}
+                    </button>
+                  </div>
                 </div>
               );
             })}
           </div>
         ) : (
           <div
+            onDragOver={handleCardDragOver}
+            onDragLeave={handleCardDragLeave}
+            onDrop={(e) => void handleCardDrop(e)}
             style={{
               padding: "26px",
               textAlign: "center",
-              background: "#f8fafc",
-              border: "2px dashed #cbd5e1",
+              background: cardDragOver ? "#e0f2fe" : "#f8fafc",
+              border: `2px dashed ${cardDragOver ? "#0284c7" : "#cbd5e1"}`,
               borderRadius: "12px",
               color: "#475569",
+              transition: "all 0.16s ease",
             }}
           >
             <div style={{ fontSize: "2rem", marginBottom: "8px" }}>📂</div>
@@ -1042,7 +1245,7 @@ export function CompanyFolderPicker({ api }: Props) {
                   cursor: "pointer",
                 }}
               >
-                📁 1-Click Browse (Windows Explorer)
+                {isDesktop ? "📁 1-Click Browse (Windows Explorer)" : "📁 Connect & Preview Folder"}
               </button>
               <button
                 type="button"
@@ -1105,7 +1308,7 @@ export function CompanyFolderPicker({ api }: Props) {
                 transition: "all 0.15s ease",
               }}
             >
-              {browserSupported && !isDesktop ? "📁 Method 1: Instant Browser Folder (1-Click)" : "📁 Method 1: Windows Explorer (1-Click)"}
+              {browserSupported && !isDesktop ? "📁 Method 1: Drag & Drop / Preview" : "📁 Method 1: Windows Explorer (1-Click)"}
             </button>
             <button
               type="button"
@@ -1128,30 +1331,32 @@ export function CompanyFolderPicker({ api }: Props) {
           </div>
         </div>
 
-        {/* Tab 1: Instant Browser Folder Access (or Electron / Remote Picker fallback) */}
+        {/* Tab 1: Instant Browser Folder Access (Drag & Drop Modal on Web, Native Picker on Desktop) */}
         {connectMethod === "browse" && (
           <div
+            onDragOver={handleCardDragOver}
+            onDragLeave={handleCardDragLeave}
+            onDrop={(e) => void handleCardDrop(e)}
             style={{
               padding: "24px",
-              background: "#f0f9ff",
-              border: "1.5px solid #bae6fd",
+              background: cardDragOver ? "#e0f2fe" : "#f0f9ff",
+              border: `1.5px ${!isDesktop ? "dashed" : "solid"} ${cardDragOver ? "#0284c7" : "#bae6fd"}`,
               borderRadius: "12px",
               textAlign: "center",
+              transition: "all 0.16s ease",
             }}
           >
             <div style={{ fontSize: "1.1rem", fontWeight: 700, color: "#0369a1", marginBottom: "6px" }}>
               {browserSupported && !isDesktop
-                ? "📁 Connect Local Folders / Files Directly in Browser (No Download)"
+                ? cardDragOver
+                  ? "📂 Release to Preview & Connect Folder"
+                  : "📁 Connect Local Folders / Files (Preview & Drag-and-Drop)"
                 : "📁 1-Click Folder / File Picker (Easy Way)"}
             </div>
             <p style={{ margin: "0 auto 20px", maxWidth: "620px", fontSize: "0.9rem", color: "#0284c7", lineHeight: 1.5 }}>
-              {browserMode === "fs-access" && !isDesktop
-                ? "Pick any folder using Chrome/Edge Direct File System Access. Nanvi automatically checks and syncs new or edited files in the background."
-                : browserMode === "webkitdirectory" && !isDesktop
-                  ? "Works directly in Firefox and Safari on Windows & Mac with zero installation! Add as many folders as needed—Nanvi caches and syncs each folder."
-                  : browserMode === "file-picker" && !isDesktop
-                    ? "Works directly in Safari on iPhone & iPad! Select documents from Apple Files or iCloud Drive to index into Nanvi."
-                    : "Click the button below to launch the native Windows Explorer dialog. Pick any folder on your PC and Nanvi links it immediately."}
+              {browserSupported && !isDesktop
+                ? "Click below to open Nanvi's Drag & Drop connector, or drop any folder directly here from Windows Explorer or Mac Finder to preview its files before connecting."
+                : "Click the button below to launch the native Windows Explorer dialog. Pick any folder on your PC and Nanvi links it immediately."}
             </p>
 
             <div style={{ display: "flex", justifyContent: "center", flexWrap: "wrap", gap: "12px" }}>
@@ -1182,19 +1387,15 @@ export function CompanyFolderPicker({ api }: Props) {
                 {browsingFolder
                   ? "Opening Folder Picker..."
                   : browserSupported && !isDesktop
-                    ? browserMode === "file-picker"
-                      ? (connectedFolders.length > 0 ? "+ Add More Files to Index" : "Select Files to Index")
-                      : (connectedFolders.length > 0 ? "+ Connect Another Folder" : "Connect Local Folder")
+                    ? (connectedFolders.length > 0 ? "+ Connect Another Folder" : "Connect Local Folder")
                     : (connectedFolders.length > 0 ? "+ Connect Another Folder" : "Open Windows Explorer & Select Folder")}
               </button>
             </div>
 
             <div style={{ marginTop: "14px", fontSize: "0.82rem", color: "#0369a1", fontWeight: 500 }}>
-              {browserMode === "fs-access" && !isDesktop
-                ? "✓ Direct Access active (Chrome, Edge, Brave, Opera) — remembers folder & auto-syncs edits while tab stays open. Need Google Drive or OneDrive? Connect in Settings → Connections Hub."
-                : (browserMode === "webkitdirectory" || browserMode === "file-picker") && !isDesktop
-                  ? "✓ Cross-Browser Multi-Folder Mode active (Firefox & Safari on Windows/Mac/iOS) — zero software install needed. Add as many folders as needed."
-                  : "✓ Direct 1-Click Access: Windows Explorer folder dialog opens directly on your computer screen."}
+              {browserSupported && !isDesktop
+                ? "✓ Works in Chrome, Edge, Firefox & Safari — zero browser upload warning via Drag & Drop. Need Google Drive or OneDrive? Connect in Settings → Connections Hub."
+                : "✓ Direct 1-Click Access: Windows Explorer folder dialog opens directly on your computer screen."}
             </div>
 
             {browserSupported && !isDesktop && (savedBrowserFolder || connectedFolders.length > 0) && (
@@ -1431,6 +1632,25 @@ export function CompanyFolderPicker({ api }: Props) {
           </div>
         )}
       </div>
+
+      <FolderConnectModal
+        open={folderModalOpen}
+        mode={folderModalMode}
+        candidates={droppedCandidates}
+        onCandidatesChange={setDroppedCandidates}
+        onConfirmConnect={handleConfirmDroppedConnect}
+        onBrowseWithPicker={browserSupported && !isDesktop ? runBrowserDevicePicker : undefined}
+        browsingWithPicker={browsingFolder}
+        connecting={confirmingDropConnect}
+        previewFolderName={previewTarget.name}
+        previewFolderPath={previewTarget.path}
+        previewFiles={previewFiles}
+        previewLoading={previewLoading}
+        onClose={() => {
+          setFolderModalOpen(false);
+          setDroppedCandidates([]);
+        }}
+      />
     </div>
   );
 }

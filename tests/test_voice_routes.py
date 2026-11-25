@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.api.voice_routes import clean_spoken_text, extract_important_points
+from backend.api.voice_routes import clean_spoken_text, extract_important_points, filter_whisper_transcript
 from backend.main import app
 
 
@@ -143,5 +143,36 @@ def test_refine_voice_query_clarifies_on_unclear_or_empty_speech(client: TestCli
     assert resp_filler.status_code == 200
     assert resp_filler.json()["status"] == "clarify"
     assert "clarification" in resp_filler.json()
+
+
+def test_filter_whisper_transcript_blocks_silence_outro_hallucinations():
+    for phantom in (
+        "Thank you for watching!",
+        "Thanks for watching.",
+        "Thank you very much for watching!",
+        "Please like and subscribe",
+        "Subtitles by Amara.org",
+    ):
+        text, no_speech, reason = filter_whisper_transcript(phantom, {"text": phantom, "segments": []})
+        assert text == ""
+        assert no_speech is True
+        assert reason is not None
+
+    # Standalone 'Thank you' when Whisper itself signals silence / low confidence
+    text_sil, no_speech_sil, _ = filter_whisper_transcript(
+        "Thank you.",
+        {"text": "Thank you.", "segments": [{"no_speech_prob": 0.91, "avg_logprob": -1.35}]},
+    )
+    assert text_sil == ""
+    assert no_speech_sil is True
+
+    # Real user queries must pass through untouched
+    text_real, no_speech_real, reason_real = filter_whisper_transcript(
+        "Show me all proposal PDFs in Office",
+        {"text": "Show me all proposal PDFs in Office", "segments": [{"no_speech_prob": 0.04, "avg_logprob": -0.2}]},
+    )
+    assert text_real == "Show me all proposal PDFs in Office"
+    assert no_speech_real is False
+    assert reason_real is None
 
 

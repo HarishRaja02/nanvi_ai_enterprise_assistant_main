@@ -835,6 +835,57 @@ class ChatService:
                     "source": "knowledge",
                 })
 
+        # Extract structured file rows from markdown tables in answer so Open/Preview actions always surface
+        _ext_pat = re.compile(
+            r"^(?P<fn>.+\.(?:pdf|docx?|xlsx?|csv|tsv|pptx?|txt|md|rtf|json|xml|html?|png|jpe?g|webp|bmp|tiff?|gif))$",
+            re.IGNORECASE,
+        )
+        for line in str(answer or "").splitlines():
+            sline = line.strip()
+            if not sline.startswith("|") or sline.count("|") < 3:
+                continue
+            if re.match(r"^\|[\s:\-\|]+\|?$", sline):
+                continue
+            raw_cells = [c.strip() for c in sline.strip("|").split("|")]
+            cleaned_cells = [
+                re.sub(r"^`+|`+$", "", re.sub(r"^\*\*|\*\*$", "", re.sub(r"^\[([^\]]+)\]\(([^)]+)\)$", r"\2", c))).strip()
+                for c in raw_cells
+            ]
+            # Ignore table header rows
+            low_join = " ".join(cleaned_cells).lower()
+            if any(h in low_join for h in ("file name", "file path", "document name")) and not any("." in c for c in cleaned_cells):
+                continue
+            row_fn = ""
+            row_path = ""
+            for raw_cell, clean_cell in zip(raw_cells, cleaned_cells):
+                link_m = re.match(r"^\[([^\]]+)\]\(([^)]+)\)$", raw_cell)
+                if link_m and ("/" in link_m.group(2) or "\\" in link_m.group(2)):
+                    if not row_path:
+                        row_path = link_m.group(2).strip()
+                    continue
+                if not row_path and ("/" in clean_cell or "\\" in clean_cell) and not clean_cell.startswith("http"):
+                    row_path = clean_cell
+                elif not row_fn and _ext_pat.match(clean_cell) and "/" not in clean_cell and "\\" not in clean_cell:
+                    row_fn = clean_cell
+            if not row_fn and row_path:
+                cand_name = Path(row_path).name
+                if _ext_pat.match(cand_name):
+                    row_fn = cand_name
+            if row_fn and (row_path or "." in row_fn):
+                full_loc, loc_key = _clean_path_and_key(row_path or row_fn)
+                dedup_key = loc_key or row_fn.lower()
+                if dedup_key not in seen_cand_keys:
+                    seen_cand_keys.add(dedup_key)
+                    cand_files.append({
+                        "name": row_fn,
+                        "path": full_loc,
+                        "full_path": full_loc,
+                        "display_path": full_loc,
+                        "type": Path(row_fn).suffix.lstrip(".") or "file",
+                        "open_url": full_loc,
+                        "source": "knowledge",
+                    })
+
         if cand_files and not is_refusal:
             cand_file_results = tuple(cand_files[:10])
             try:

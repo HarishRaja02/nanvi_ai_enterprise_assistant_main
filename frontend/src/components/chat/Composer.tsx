@@ -1,6 +1,14 @@
 import { FormEvent, KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowUp, AudioLines, ChevronDown, FileText, Loader2, Mic, Plus, Sparkles, X } from "lucide-react";
+import { ArrowUp, AudioLines, ChevronDown, FileText, Loader2, Mic, MicOff, Plus, Settings, Sparkles, X } from "lucide-react";
 import type { NanviApiClient } from "../../api";
+import {
+  checkMicrophonePermission,
+  classifyMicrophoneError,
+  computeTimeDomainRms,
+  isDesktopEnvironment,
+  isWhisperHallucination,
+  openSystemMicrophoneSettings,
+} from "../../lib/voiceInputGuard";
 
 const MAX_LENGTH = 4000;
 const WARN_AT = 3600;
@@ -39,6 +47,10 @@ export function Composer({
     message: string;
     suggestions: string[];
   } | null>(null);
+  const [micNotice, setMicNotice] = useState<{
+    message: string;
+    canOpenSettings: boolean;
+  } | null>(null);
 
   const ref = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -52,6 +64,10 @@ export function Composer({
   const speechDetectedRef = useRef<boolean>(false);
   const lastSpokenTimeRef = useRef<number>(0);
   const animFrameRef = useRef<number | null>(null);
+  const hasAudioAnalyserRef = useRef<boolean>(false);
+  const peakRmsRef = useRef<number>(0);
+  const peakFreqAvgRef = useRef<number>(0);
+  const hasSignalFramesRef = useRef<number>(0);
 
   const stopAudioCapture = async (): Promise<Blob | null> => {
     if (animFrameRef.current) {
@@ -149,19 +165,51 @@ export function Composer({
       }
       recognitionRef.current = null;
     }
+    const hadAnalyser = hasAudioAnalyserRef.current;
+    const signalFrames = hasSignalFramesRef.current;
+    const peakRms = peakRmsRef.current;
+    const peakFreq = peakFreqAvgRef.current;
     const recordedBlob = await stopAudioCapture();
+    hasAudioAnalyserRef.current = false;
     setIsListening(false);
 
-    // If Web Speech emitted transcript, use it
+    const desktopCanOpenSettings =
+      typeof window !== "undefined" && Boolean(window.electronAPI?.openMicSettings);
+
+    // If Web Speech emitted transcript, guard against silence hallucinations before sending
     const candidate = accumulatedTranscriptRef.current.trim();
     if (candidate) {
       accumulatedTranscriptRef.current = "";
+      if (isWhisperHallucination(candidate)) {
+        setValue("");
+        setMicNotice({
+          message:
+            "Could not hear clear speech from your microphone. Please activate your mic and try again.",
+          canOpenSettings: desktopCanOpenSettings,
+        });
+        return;
+      }
       void handleFinishSpeaking(candidate);
       return;
     }
 
+    if (!transcribeFallback) return;
+
+    // Prevent silent, muted, or OS-blocked microphone streams from reaching Whisper (avoids "Thank you for watching!" hallucinations)
+    const noLiveSignal =
+      hadAnalyser && signalFrames === 0 && peakRms < 0.008 && peakFreq < 3.0;
+    if (noLiveSignal || !recordedBlob || recordedBlob.size < 800) {
+      setMicNotice({
+        message: isDesktopEnvironment()
+          ? "No voice audio detected from your microphone. Please activate and unmute your mic (or check Windows Microphone Privacy Settings), then try again."
+          : "No voice audio detected from your microphone. Please allow and unmute your microphone, then try again.",
+        canOpenSettings: desktopCanOpenSettings,
+      });
+      return;
+    }
+
     // Fallback to Groq Whisper when Web Speech API is absent or errored (e.g. in Electron)
-    if (transcribeFallback && recordedBlob && recordedBlob.size > 400 && api?.voiceTranscribe) {
+    if (api?.voiceTranscribe) {
       setIsRefining(true);
       try {
         const base64 = await new Promise<string>((resolve, reject) => {
@@ -174,12 +222,22 @@ export function Composer({
           reader.readAsDataURL(recordedBlob);
         });
         const res = await api.voiceTranscribe(base64, recordedBlob.type || "audio/webm");
-        if (res?.text && res.text.trim()) {
-          void handleFinishSpeaking(res.text.trim());
+        const transcribed = String(res?.text || "").trim();
+        if (!res?.no_speech && transcribed && !isWhisperHallucination(transcribed)) {
+          void handleFinishSpeaking(transcribed);
           return;
         }
+        setMicNotice({
+          message:
+            "Could not detect clear speech — please ensure your microphone is active and speak clearly, then try again.",
+          canOpenSettings: desktopCanOpenSettings,
+        });
       } catch (err) {
         console.warn("[Composer Voice] Whisper fallback transcription failed:", err);
+        setMicNotice({
+          message: "Voice transcription could not complete. Please check your microphone and connection, then try again.",
+          canOpenSettings: desktopCanOpenSettings,
+        });
       } finally {
         setIsRefining(false);
       }
@@ -268,11 +326,46 @@ export function Composer({
 
   const startListening = async () => {
     setClarification(null);
+    setMicNotice(null);
     accumulatedTranscriptRef.current = "";
     speechDetectedRef.current = false;
     lastSpokenTimeRef.current = 0;
+    hasAudioAnalyserRef.current = false;
+    peakRmsRef.current = 0;
+    peakFreqAvgRef.current = 0;
+    hasSignalFramesRef.current = 0;
 
-    // 1. Initialize continuous MediaRecorder & AudioContext for bulletproof audio capture / Whisper fallback
+    const isDesktop = isDesktopEnvironment();
+    const SpeechClass =
+      typeof window !== "undefined" && !isDesktop
+        ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+        : null;
+
+    // 0. Check OS / Electron / browser microphone permission upfront and prompt user if blocked
+    const perm = await checkMicrophonePermission();
+    if (perm.blocked) {
+      setMicNotice({
+        message:
+          perm.message ||
+          "Please allow or activate microphone permission to use voice input.",
+        canOpenSettings: perm.canOpenSettings,
+      });
+      return;
+    }
+
+    if (
+      (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) &&
+      !SpeechClass
+    ) {
+      setMicNotice({
+        message:
+          "Microphone access is unavailable. Please connect and activate a microphone, then try again.",
+        canOpenSettings: perm.canOpenSettings,
+      });
+      return;
+    }
+
+    // 1. Initialize continuous MediaRecorder & AudioContext for audio capture / Whisper fallback
     try {
       if (typeof navigator !== "undefined" && navigator.mediaDevices?.getUserMedia) {
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -313,6 +406,8 @@ export function Composer({
           analyser.fftSize = 256;
           source.connect(analyser);
           const dataArray = new Uint8Array(analyser.frequencyBinCount);
+          const timeDomainArray = new Uint8Array(analyser.fftSize);
+          hasAudioAnalyserRef.current = true;
 
           const checkLevel = () => {
             if (!mediaStreamRef.current) return;
@@ -320,7 +415,16 @@ export function Composer({
             let sum = 0;
             for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
             const avg = sum / dataArray.length;
-            if (avg > 3.0) {
+            let rms = 0;
+            if (typeof analyser.getByteTimeDomainData === "function") {
+              analyser.getByteTimeDomainData(timeDomainArray);
+              rms = computeTimeDomainRms(timeDomainArray);
+            }
+            if (rms > peakRmsRef.current) peakRmsRef.current = rms;
+            if (avg > peakFreqAvgRef.current) peakFreqAvgRef.current = avg;
+
+            if (rms > 0.012 || avg > 3.5) {
+              hasSignalFramesRef.current += 1;
               speechDetectedRef.current = true;
               lastSpokenTimeRef.current = Date.now();
               if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
@@ -337,17 +441,14 @@ export function Composer({
       }
     } catch (micErr) {
       console.warn("[Composer Voice] Microphone access notice:", micErr);
+      const classified = classifyMicrophoneError(micErr);
+      setMicNotice(classified);
+      return;
     }
 
     setIsListening(true);
 
     // 2. Initialize browser SpeechRecognition if available and not in Desktop Electron
-    const isDesktop = typeof window !== "undefined" && Boolean((window as any).electronAPI?.isDesktop);
-    const SpeechClass =
-      typeof window !== "undefined" && !isDesktop
-        ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-        : null;
-
     if (SpeechClass) {
       try {
         const recognition = new SpeechClass();
@@ -394,6 +495,9 @@ export function Composer({
             // Google Speech API network unavailable; MediaRecorder Whisper fallback handles it
             return;
           }
+          if (event.error === "not-allowed" || event.error === "audio-capture") {
+            setMicNotice(classifyMicrophoneError({ name: event.error === "not-allowed" ? "NotAllowedError" : "NotReadableError" }));
+          }
           void stopListening(false);
         };
 
@@ -412,7 +516,10 @@ export function Composer({
   };
 
   const handleVoiceClick = () => {
-    onOpenVoiceMode?.();
+    if (onOpenVoiceMode) {
+      onOpenVoiceMode();
+      return;
+    }
     if (isListening) {
       void stopListening(true);
     } else {
@@ -528,7 +635,7 @@ export function Composer({
 
   const nearLimit = value.length >= WARN_AT;
   const hasText = value.trim().length > 0;
-  const hasStatusTray = Boolean(attachedFile || uploading || uploadError || clarification);
+  const hasStatusTray = Boolean(attachedFile || uploading || uploadError || clarification || micNotice);
 
   return (
     <form
@@ -581,6 +688,43 @@ export function Composer({
           {uploadError && (
             <div className="composer-error-pill" role="alert">
               {uploadError}
+            </div>
+          )}
+
+          {micNotice && (
+            <div className="composer-mic-notice" role="alert">
+              <div className="composer-mic-notice-body">
+                <MicOff size={15} className="mic-notice-icon" aria-hidden="true" />
+                <span className="composer-mic-notice-text">{micNotice.message}</span>
+                <button
+                  type="button"
+                  className="clarification-close-btn"
+                  onClick={() => setMicNotice(null)}
+                  aria-label="Dismiss microphone notice"
+                >
+                  <X size={14} aria-hidden="true" />
+                </button>
+              </div>
+              <div className="composer-mic-notice-actions">
+                <button
+                  type="button"
+                  className="mic-notice-action-btn primary"
+                  onClick={() => void startListening()}
+                >
+                  <Mic size={12} aria-hidden="true" />
+                  <span>Allow Microphone & Try Again</span>
+                </button>
+                {micNotice.canOpenSettings && (
+                  <button
+                    type="button"
+                    className="mic-notice-action-btn secondary"
+                    onClick={() => void openSystemMicrophoneSettings()}
+                  >
+                    <Settings size={12} aria-hidden="true" />
+                    <span>Open Mic Settings</span>
+                  </button>
+                )}
+              </div>
             </div>
           )}
 
