@@ -1,16 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from "react";
 import {
   AlertCircle,
   CheckCircle2,
+  FilePlus2,
   FileText,
   Folder,
   Info,
   Loader2,
   Search,
+  X,
 } from "lucide-react";
 import { Modal } from "./Modal";
 import { Button } from "./Button";
 import {
+  buildDroppedCandidatesFromFileList,
   extractDroppedFoldersFromDataTransfer,
   type DroppedFolderCandidate,
 } from "../../lib/browserFolderSync";
@@ -30,6 +33,7 @@ type Props = {
   onCandidatesChange: (next: DroppedFolderCandidate[]) => void;
   onConfirmConnect: (candidates: DroppedFolderCandidate[]) => Promise<void>;
   connecting?: boolean;
+  allowWebFileOpener?: boolean;
   previewFolderName?: string;
   previewFolderPath?: string;
   previewFiles?: PreviewableFolderFile[];
@@ -61,6 +65,7 @@ export function FolderConnectModal({
   onCandidatesChange,
   onConfirmConnect,
   connecting = false,
+  allowWebFileOpener = true,
   previewFolderName = "",
   previewFolderPath = "",
   previewFiles = [],
@@ -74,6 +79,7 @@ export function FolderConnectModal({
   const [searchTerm, setSearchTerm] = useState("");
 
   const dragDepthRef = useRef(0);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Prevent browser from navigating away if user drops outside the dropbox while modal is open
   useEffect(() => {
@@ -215,6 +221,33 @@ export function FolderConnectModal({
     setSearchTerm("");
     onCandidatesChange([]);
   }, [onCandidatesChange]);
+
+  const handleOpenExplorerWithNotice = useCallback(() => {
+    setDropError(null);
+    setClickDragNotice(true);
+    if (allowWebFileOpener) {
+      fileInputRef.current?.click();
+    }
+  }, [allowWebFileOpener]);
+
+  const handleFileInputChange = useCallback(
+    (e: ChangeEvent<HTMLInputElement>) => {
+      const files = e.target.files;
+      e.target.value = "";
+      if (!files || files.length === 0) return;
+
+      setDropError(null);
+      setClickDragNotice(false);
+      const extracted = buildDroppedCandidatesFromFileList(files, "Selected Files");
+      if (extracted.length === 0) {
+        setDropError("No files were selected.");
+        return;
+      }
+      setSearchTerm("");
+      onCandidatesChange(extracted);
+    },
+    [onCandidatesChange],
+  );
 
   const handleConfirm = useCallback(() => {
     void onConfirmConnect(candidates);
@@ -567,26 +600,117 @@ export function FolderConnectModal({
           </div>
 
           {clickDragNotice && (
-            <div
-              role="status"
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "8px",
-                padding: "11px 14px",
-                borderRadius: "10px",
-                background: "var(--primary-50, #eff8fa)",
-                border: "1px solid var(--primary-200, #b5dce5)",
-                color: "var(--primary-800, #003d4d)",
-                fontSize: "0.85rem",
-                fontWeight: 600,
-              }}
-            >
-              <Info size={16} style={{ flexShrink: 0, color: "var(--primary-600, #006583)" }} />
-              <span>
-                Please drag and drop the folder or documents from Windows Explorer (<strong>Win + E</strong>) or Mac Finder into the dashed box above.
-              </span>
-            </div>
+            <>
+              <div
+                data-testid="nanvi-drag-drop-toast"
+                role="note"
+                style={{
+                  position: "fixed",
+                  top: "20px",
+                  right: "20px",
+                  zIndex: 100000,
+                  maxWidth: "360px",
+                  padding: "14px 16px",
+                  borderRadius: "12px",
+                  background: "var(--bg-surface, #ffffff)",
+                  border: "1px solid var(--primary-200, #b5dce5)",
+                  boxShadow: "0 14px 36px rgba(15, 23, 42, 0.18)",
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: "10px",
+                  textAlign: "left",
+                }}
+              >
+                <div
+                  style={{
+                    width: "30px",
+                    height: "30px",
+                    borderRadius: "8px",
+                    background: "var(--primary-50, #eff8fa)",
+                    color: "var(--primary-600, #006583)",
+                    display: "grid",
+                    placeItems: "center",
+                    flexShrink: 0,
+                    marginTop: "1px",
+                  }}
+                >
+                  <Info size={16} />
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    style={{
+                      fontSize: "0.88rem",
+                      fontWeight: 700,
+                      color: "var(--text, #0f172a)",
+                      marginBottom: "3px",
+                    }}
+                  >
+                    Please drag and drop your folder
+                  </div>
+                  <div
+                    style={{
+                      fontSize: "0.8rem",
+                      color: "var(--text-secondary, #334155)",
+                      lineHeight: 1.45,
+                    }}
+                  >
+                    To connect a whole folder, open Windows Explorer (<strong>Win + E</strong>) or Mac
+                    Finder and drag it into the dashed box — or select individual files in the Open
+                    window and click <strong>Open</strong>.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  aria-label="Dismiss drag and drop notice"
+                  onClick={() => setClickDragNotice(false)}
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    padding: "2px",
+                    color: "var(--text-muted, #64748b)",
+                    cursor: "pointer",
+                    lineHeight: 1,
+                    flexShrink: 0,
+                  }}
+                >
+                  <X size={15} />
+                </button>
+              </div>
+
+              <div
+                role="status"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  padding: "11px 14px",
+                  borderRadius: "10px",
+                  background: "var(--primary-50, #eff8fa)",
+                  border: "1px solid var(--primary-200, #b5dce5)",
+                  color: "var(--primary-800, #003d4d)",
+                  fontSize: "0.85rem",
+                  fontWeight: 600,
+                }}
+              >
+                <Info size={16} style={{ flexShrink: 0, color: "var(--primary-600, #006583)" }} />
+                <span>
+                  Please drag and drop your folder from Windows Explorer (<strong>Win + E</strong>)
+                  or Mac Finder into the dashed box above — or choose individual documents in the
+                  Open window.
+                </span>
+              </div>
+            </>
+          )}
+
+          {allowWebFileOpener && (
+            <input
+              ref={fileInputRef}
+              data-testid="nanvi-normal-file-input"
+              type="file"
+              multiple
+              onChange={handleFileInputChange}
+              style={{ display: "none" }}
+            />
           )}
 
           <div
@@ -603,12 +727,14 @@ export function FolderConnectModal({
             }}
           >
             <span style={{ fontSize: "0.84rem", color: "var(--text-secondary, #334155)" }}>
-              Need to connect individual documents instead of a folder? Drag &amp; drop one or more files into the box above.
+              Need to pick individual documents instead of a folder? Click to browse files or drag
+              &amp; drop above.
             </span>
             <Button
               variant="secondary"
               size="sm"
-              onClick={() => setClickDragNotice(true)}
+              icon={FilePlus2}
+              onClick={handleOpenExplorerWithNotice}
             >
               Drag &amp; Drop Files
             </Button>

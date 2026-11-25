@@ -1640,6 +1640,7 @@ export function CompanyFolderPicker({ api }: Props) {
         onCandidatesChange={setDroppedCandidates}
         onConfirmConnect={handleConfirmDroppedConnect}
         connecting={confirmingDropConnect}
+        allowWebFileOpener={!isDesktop}
         previewFolderName={previewTarget.name}
         previewFolderPath={previewTarget.path}
         previewFiles={previewFiles}

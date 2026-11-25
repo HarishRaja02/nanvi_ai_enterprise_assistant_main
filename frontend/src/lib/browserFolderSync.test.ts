@@ -1530,52 +1530,67 @@ describe("browserFolderSync", () => {
     setActiveFolderStorageScope(null);
   });
 
-  it("shows drag-and-drop notice when clicking inside Nanvi modal and drops loose documents without OS file dialog", async () => {
+  it("opens All-Files Explorer window alongside the 'Please drag and drop' notification when clicking Drag & Drop Files, and supports both file Open and drop flows", async () => {
     delete (window as unknown as { showDirectoryPicker?: unknown }).showDirectoryPicker;
     delete (window as unknown as { electronAPI?: unknown }).electronAPI;
 
+    let selectedOpen = false;
     const mockApi = {
       getLocalAgentToken: vi.fn().mockResolvedValue({ token: "pair-files" }),
-      getLocalAgentStatus: vi.fn().mockResolvedValue({
-        is_online: false,
-        connected_folders: [],
-        total_files: 0,
-        total_chunks: 0,
-      }),
-      syncLocalFolderWithPairingToken: vi.fn().mockResolvedValue({
-        status: "ok",
-        folder_id: "browser://Dropped Files",
-        chunks_synced: 1,
-        files_synced: 1,
+      getLocalAgentStatus: vi.fn().mockImplementation(async () => ({
+        is_online: selectedOpen,
+        connected_folders: selectedOpen
+          ? [
+            {
+              folder_id: "browser://Selected Files",
+              folder_path: "Selected Files",
+              display_name: "Selected Files",
+              file_count: 1,
+              chunk_count: 1,
+              status: "synced",
+            },
+          ]
+          : [],
+        total_files: selectedOpen ? 1 : 0,
+        total_chunks: selectedOpen ? 1 : 0,
+      })),
+      syncLocalFolderWithPairingToken: vi.fn().mockImplementation(async () => {
+        selectedOpen = true;
+        return {
+          status: "ok",
+          folder_id: "browser://Selected Files",
+          chunks_synced: 1,
+          files_synced: 1,
+        };
       }),
       sendLocalAgentHeartbeatWithPairingToken: vi.fn().mockResolvedValue({ status: "ok" }),
     };
 
-    setActiveFolderStorageScope("pure-drag-drop-scope");
+    setActiveFolderStorageScope("chatgpt-open-notice-scope");
     const user = userEvent.setup();
-    render(createElement(CompanyFolderPicker, { api: mockApi as any }));
+    const { unmount } = render(createElement(CompanyFolderPicker, { api: mockApi as any }));
 
-    // No OS file input or Select Files button on Method 1 card
-    expect(screen.queryByTestId("nanvi-card-file-input")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Select Files/i })).not.toBeInTheDocument();
-
-    // Clicking Connect Local Folder opens the Nanvi modal with pure drag-and-drop UI
     await user.click(screen.getByRole("button", { name: /^Connect Local Folder$/i }));
     const dialog = await screen.findByRole("dialog");
-    expect(
-      within(dialog).getByText(/Please drag and drop your folder or files here/i),
-    ).toBeInTheDocument();
-    expect(within(dialog).queryByTestId("nanvi-normal-file-input")).not.toBeInTheDocument();
 
-    // Clicking Drag & Drop Files shows the inline "Please drag and drop..." notice instead of an OS dialog
+    // Normal ChatGPT-style file input (multiple, NO webkitdirectory, NO accept filter -> All Files (*.*))
+    const fileInput = within(dialog).getByTestId("nanvi-normal-file-input") as HTMLInputElement;
+    expect(fileInput.multiple).toBe(true);
+    expect(fileInput.hasAttribute("webkitdirectory")).toBe(false);
+    expect(fileInput.hasAttribute("accept")).toBe(false);
+    const clickSpy = vi.spyOn(fileInput, "click");
+
+    // Clicking Drag & Drop Files opens the All-Files Explorer dialog AND shows the "Please drag and drop" notification
     await user.click(within(dialog).getByRole("button", { name: /Drag & Drop Files/i }));
-    expect(
-      await within(dialog).findByText(
-        /Please drag and drop the folder or documents from Windows Explorer/i,
-      ),
-    ).toBeInTheDocument();
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+    expect(await within(dialog).findByTestId("nanvi-drag-drop-toast")).toHaveTextContent(
+      /Please drag and drop your folder/i,
+    );
+    expect(within(dialog).getByRole("status")).toHaveTextContent(
+      /Please drag and drop your folder from Windows Explorer/i,
+    );
 
-    // Dragging & dropping loose files works seamlessly
+    // Selecting files inside the Explorer Open window previews and connects cleanly with zero upload warning
     const f1 = {
       name: "quarterly_report.txt",
       type: "text/plain",
@@ -1584,25 +1599,21 @@ describe("browserFolderSync", () => {
       text: async () => "Q4 Enterprise Summary Content",
       arrayBuffer: async () => new ArrayBuffer(0),
     } as unknown as File;
-
-    fireEvent.drop(within(dialog).getByTestId("nanvi-folder-dropzone"), {
-      dataTransfer: {
-        items: [{ kind: "file", getAsFile: () => f1 }],
-        files: [f1],
-      },
-    });
+    Object.defineProperty(fileInput, "files", { configurable: true, value: [f1] });
+    fireEvent.change(fileInput);
 
     expect(
-      await within(dialog).findByText(/Would you like to connect "Dropped Files" to Nanvi\?/i),
+      await within(dialog).findByText(/Would you like to connect these 1 files to Nanvi\?/i),
     ).toBeInTheDocument();
     expect(within(dialog).getByText("quarterly_report.txt")).toBeInTheDocument();
 
-    await user.click(within(dialog).getByRole("button", { name: /^Connect Folder$/i }));
+    await user.click(within(dialog).getByRole("button", { name: /^Connect Files$/i }));
     expect(
-      await screen.findByText(/Connected 'Dropped Files' \(1 files\) — Ready to search/i),
+      await screen.findByText(/Connected 'Selected Files' \(1 files\) — Ready to search/i),
     ).toBeInTheDocument();
+    unmount();
 
-    await clearSavedBrowserDirectoryHandle("Dropped Files");
+    await clearSavedBrowserDirectoryHandle("Selected Files");
     setActiveFolderStorageScope(null);
   });
 });
