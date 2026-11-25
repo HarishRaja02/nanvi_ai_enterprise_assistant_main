@@ -842,9 +842,48 @@ describe("browserFolderSync", () => {
     const connectBtn = await screen.findByRole("button", { name: /^Connect Local Folder$/i });
     await user.click(connectBtn);
 
-    // Opens Nanvi Drag & Drop modal first; choosing Browse with Browser Picker uses showDirectoryPicker
-    const pickerFallbackBtn = await screen.findByRole("button", { name: /Browse with Browser Picker/i });
-    await user.click(pickerFallbackBtn);
+    const dropzone = await screen.findByTestId("nanvi-folder-dropzone");
+    const rootEntry = {
+      isFile: false,
+      isDirectory: true,
+      name: "InstantBridgeRepo",
+      createReader: () => {
+        let done = false;
+        return {
+          readEntries: (cb: (entries: any[]) => void) => {
+            if (!done) {
+              done = true;
+              cb(
+                Array.from({ length: 25 }, (_, i) => ({
+                  isFile: true,
+                  isDirectory: false,
+                  name: `report_${i}.csv`,
+                  file: (fCb: (f: File) => void) =>
+                    fCb({
+                      name: `report_${i}.csv`,
+                      type: "text/csv",
+                      size: 32,
+                      lastModified: 1700007000000 + i,
+                      text: async () => `Id,Value\nR-${i},${i * 10}`,
+                      arrayBuffer: async () => new TextEncoder().encode(`Id,Value\nR-${i},${i * 10}`).buffer,
+                    } as unknown as File),
+                })),
+              );
+            } else {
+              cb([]);
+            }
+          },
+        };
+      },
+    };
+    fireEvent.drop(dropzone, {
+      dataTransfer: {
+        items: [{ kind: "file", webkitGetAsEntry: () => rootEntry }],
+        files: [],
+      },
+    });
+
+    await user.click(await screen.findByRole("button", { name: /^Connect Folder$/i }));
 
     // Must immediately show Connected & never show blocking Reading/Syncing progress bars
     expect(await screen.findByText(/Connected 'InstantBridgeRepo' \(25 files\) — Ready to search/i)).toBeInTheDocument();
@@ -1428,7 +1467,8 @@ describe("browserFolderSync", () => {
 
     const dropzone = await screen.findByTestId("nanvi-folder-dropzone");
     expect(screen.getByText(/Drag & drop your folder here/i)).toBeInTheDocument();
-    expect(screen.getByText(/No browser upload warning/i)).toBeInTheDocument();
+    expect(screen.queryByText(/No browser upload warning/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Browse with Browser Picker/i })).not.toBeInTheDocument();
 
     // 2. Dropping a folder switches modal to Nanvi file preview + "Would you like to connect..." confirmation
     const rootEntry = {

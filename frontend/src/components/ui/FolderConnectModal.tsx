@@ -6,7 +6,6 @@ import {
   Folder,
   Loader2,
   Search,
-  ShieldCheck,
 } from "lucide-react";
 import { Modal } from "./Modal";
 import { Button } from "./Button";
@@ -29,8 +28,6 @@ type Props = {
   candidates: DroppedFolderCandidate[];
   onCandidatesChange: (next: DroppedFolderCandidate[]) => void;
   onConfirmConnect: (candidates: DroppedFolderCandidate[]) => Promise<void>;
-  onBrowseWithPicker?: () => Promise<void>;
-  browsingWithPicker?: boolean;
   connecting?: boolean;
   previewFolderName?: string;
   previewFolderPath?: string;
@@ -62,8 +59,6 @@ export function FolderConnectModal({
   candidates,
   onCandidatesChange,
   onConfirmConnect,
-  onBrowseWithPicker,
-  browsingWithPicker = false,
   connecting = false,
   previewFolderName = "",
   previewFolderPath = "",
@@ -471,7 +466,7 @@ export function FolderConnectModal({
             </Button>
           </>
         ) : (
-          <Button variant="ghost" onClick={onClose} disabled={browsingWithPicker}>
+          <Button variant="ghost" onClick={onClose}>
             Cancel
           </Button>
         )
@@ -542,50 +537,6 @@ export function FolderConnectModal({
                 preview its contents before connecting.
               </p>
             </div>
-
-            <div
-              style={{
-                display: "flex",
-                flexWrap: "wrap",
-                justifyContent: "center",
-                gap: "8px",
-                marginTop: "4px",
-              }}
-            >
-              <span
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "5px",
-                  padding: "4px 10px",
-                  borderRadius: "9999px",
-                  background: "var(--success-bg, #f0fdf4)",
-                  border: "1px solid var(--success-border, #bbf7d0)",
-                  color: "var(--success-fg, #15803d)",
-                  fontSize: "0.76rem",
-                  fontWeight: 600,
-                }}
-              >
-                <ShieldCheck size={13} />
-                No browser upload warning
-              </span>
-              <span
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "5px",
-                  padding: "4px 10px",
-                  borderRadius: "9999px",
-                  background: "var(--bg-surface, #ffffff)",
-                  border: "1px solid var(--border, #e2e8f0)",
-                  color: "var(--text-secondary, #334155)",
-                  fontSize: "0.76rem",
-                  fontWeight: 600,
-                }}
-              >
-                Works in Chrome, Edge, Firefox & Safari
-              </span>
-            </div>
           </div>
 
           {dropError && (
@@ -606,37 +557,6 @@ export function FolderConnectModal({
             >
               <AlertCircle size={16} style={{ flexShrink: 0 }} />
               <span>{dropError}</span>
-            </div>
-          )}
-
-          {onBrowseWithPicker && (
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                flexWrap: "wrap",
-                gap: "10px",
-                padding: "12px 14px",
-                borderRadius: "10px",
-                background: "var(--bg-sunken, #f1f5f9)",
-                border: "1px solid var(--border, #e2e8f0)",
-              }}
-            >
-              <div style={{ fontSize: "0.8rem", color: "var(--text-secondary, #334155)", lineHeight: 1.4 }}>
-                <strong>On mobile/tablet or prefer manual browse?</strong>
-                <div style={{ color: "var(--text-muted, #64748b)", fontSize: "0.75rem" }}>
-                  Standard browser pickers show your browser&apos;s built-in permission prompt.
-                </div>
-              </div>
-              <Button
-                variant="secondary"
-                size="sm"
-                loading={browsingWithPicker}
-                onClick={() => void onBrowseWithPicker()}
-              >
-                Browse with Browser Picker
-              </Button>
             </div>
           )}
         </div>

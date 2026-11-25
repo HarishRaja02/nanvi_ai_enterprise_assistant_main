@@ -1394,7 +1394,7 @@ export function CompanyFolderPicker({ api }: Props) {
 
             <div style={{ marginTop: "14px", fontSize: "0.82rem", color: "#0369a1", fontWeight: 500 }}>
               {browserSupported && !isDesktop
-                ? "✓ Works in Chrome, Edge, Firefox & Safari — zero browser upload warning via Drag & Drop. Need Google Drive or OneDrive? Connect in Settings → Connections Hub."
+                ? "✓ Drag & drop a folder directly to preview its files before connecting. Need Google Drive or OneDrive? Connect in Settings → Connections Hub."
                 : "✓ Direct 1-Click Access: Windows Explorer folder dialog opens directly on your computer screen."}
             </div>
 
@@ -1639,8 +1639,6 @@ export function CompanyFolderPicker({ api }: Props) {
         candidates={droppedCandidates}
         onCandidatesChange={setDroppedCandidates}
         onConfirmConnect={handleConfirmDroppedConnect}
-        onBrowseWithPicker={browserSupported && !isDesktop ? runBrowserDevicePicker : undefined}
-        browsingWithPicker={browsingFolder}
         connecting={confirmingDropConnect}
         previewFolderName={previewTarget.name}
         previewFolderPath={previewTarget.path}
