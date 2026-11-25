@@ -1,10 +1,9 @@
-import { useCallback, useEffect, useRef, useState, type ChangeEvent, type DragEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 import type { NanviApiClient, LocalAgentStatusResponse } from "../../api";
 import { useToast } from "./Toast";
 import { FolderConnectModal, type PreviewableFolderFile } from "./FolderConnectModal";
 import {
   autoRestoreBrowserFolderIfGranted,
-  buildDroppedCandidatesFromFileList,
   cancelPendingBrowserFolderPicker,
   clearDesktopLocalFolder,
   clearSavedBrowserDirectoryHandle,
@@ -72,7 +71,6 @@ export function CompanyFolderPicker({ api }: Props) {
 
   const rapidPollRef = useRef<number | null>(null);
   const lastDispatchedRef = useRef<string>("");
-  const cardFileInputRef = useRef<HTMLInputElement>(null);
 
   const fetchStatus = useCallback(async () => {
     const dispatchIfChanged = (res: LocalAgentStatusResponse) => {
@@ -860,21 +858,6 @@ export function CompanyFolderPicker({ api }: Props) {
     }
   };
 
-  const handleCardFileSelect = (e: ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-    const picked = buildDroppedCandidatesFromFileList(files, "Selected Files");
-    e.target.value = "";
-    if (picked.length === 0) {
-      setAddFolderMsg("No supported documents were selected.");
-      return;
-    }
-    setAddFolderMsg(null);
-    setDroppedCandidates(picked);
-    setFolderModalMode("connect");
-    setFolderModalOpen(true);
-  };
-
   const handleReconnectSavedBrowserFolder = async () => {
     setBrowsingFolder(true);
     setAddFolderMsg(null);
@@ -1407,48 +1390,6 @@ export function CompanyFolderPicker({ api }: Props) {
                     ? (connectedFolders.length > 0 ? "+ Connect Another Folder" : "Connect Local Folder")
                     : (connectedFolders.length > 0 ? "+ Connect Another Folder" : "Open Windows Explorer & Select Folder")}
               </button>
-
-              {browserSupported && !isDesktop && (
-                <>
-                  <input
-                    ref={cardFileInputRef}
-                    data-testid="nanvi-card-file-input"
-                    type="file"
-                    multiple
-                    accept=".txt,.md,.markdown,.csv,.tsv,.log,.json,.jsonl,.yaml,.yml,.rtf,.html,.htm,.xml,.pdf,.docx,.xlsx,.xlsm,.pptx,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff,.gif"
-                    onChange={handleCardFileSelect}
-                    style={{ display: "none" }}
-                  />
-                  <button
-                    type="button"
-                    className="folder-picker-btn"
-                    onClick={() => cardFileInputRef.current?.click()}
-                    disabled={browsingFolder}
-                    style={{
-                      padding: "14px 24px",
-                      fontSize: "1rem",
-                      fontWeight: 700,
-                      background: "#ffffff",
-                      color: "#0369a1",
-                      border: "1.5px solid #0284c7",
-                      borderRadius: "10px",
-                      cursor: "pointer",
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: "8px",
-                      transition: "all 0.2s ease",
-                    }}
-                  >
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                      <polyline points="14 2 14 8 20 8" />
-                      <line x1="12" y1="18" x2="12" y2="12" />
-                      <line x1="9" y1="15" x2="15" y2="15" />
-                    </svg>
-                    Select Files
-                  </button>
-                </>
-              )}
             </div>
 
             <div style={{ marginTop: "14px", fontSize: "0.82rem", color: "#0369a1", fontWeight: 500 }}>
@@ -1698,7 +1639,6 @@ export function CompanyFolderPicker({ api }: Props) {
         candidates={droppedCandidates}
         onCandidatesChange={setDroppedCandidates}
         onConfirmConnect={handleConfirmDroppedConnect}
-        allowWebFileOpener={!isDesktop}
         connecting={confirmingDropConnect}
         previewFolderName={previewTarget.name}
         previewFolderPath={previewTarget.path}
