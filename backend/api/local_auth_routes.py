@@ -1,0 +1,535 @@
+from __future__ import annotations
+
+import os
+import time
+from datetime import datetime
+from typing import Literal
+
+import jwt
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
+
+from backend.core.config import settings
+from backend.security.authorization.permissions import Permission
+from backend.security.authorization.rbac import Role, has_permission
+from backend.security.dependencies import get_current_user
+from backend.security.local_accounts import LocalAccountStore, get_local_account_store
+from backend.security.mailer import send_password_reset_email
+from backend.security.models import UserIdentity
+import logging
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/auth", tags=["authentication"])
+
+LocalRole = Literal["Admin", "Superior", "Supervisor", "Project Engineer", "Employee"]
+LocalRole = Literal["Admin", "Superior", "Supervisor", "Project Engineer", "Employee", "Intern"]
+ADMINISTRATIVE_ROLES = {Role.SUPERIOR, Role.SUPERVISOR, Role.CEO, Role.FINANCE, Role.ADMIN}
+SUPERVISOR_MANAGED_ROLES = {Role.PROJECT_ENGINEER.value, Role.EMPLOYEE.value}
+SUPERVISOR_MANAGED_ROLES = {Role.PROJECT_ENGINEER.value, Role.EMPLOYEE.value, Role.INTERN.value}
+
+TIER_ROLE_MAP: dict[str, str] = {
+    "tier 1": Role.SUPERIOR.value,
+    "tier 1 (superior)": Role.SUPERIOR.value,
+    "tier1": Role.SUPERIOR.value,
+    "super admin": Role.SUPERIOR.value,
+    "super admin / management": Role.SUPERIOR.value,
+    "tier 2": Role.SUPERVISOR.value,
+    "tier 2 (supervisor)": Role.SUPERVISOR.value,
+    "tier2": Role.SUPERVISOR.value,
+    "manager / supervisor": Role.SUPERVISOR.value,
+    "tier 3": Role.PROJECT_ENGINEER.value,
+    "tier 3 (project manager)": Role.PROJECT_ENGINEER.value,
+    "tier 3 (project engineer)": Role.PROJECT_ENGINEER.value,
+    "tier3": Role.PROJECT_ENGINEER.value,
+    "project manager": Role.PROJECT_ENGINEER.value,
+    "team lead": Role.PROJECT_ENGINEER.value,
+    "project manager / team lead": Role.PROJECT_ENGINEER.value,
+    "tier 4": Role.EMPLOYEE.value,
+    "tier 4 (employee)": Role.EMPLOYEE.value,
+    "tier4": Role.EMPLOYEE.value,
+    "tier 5": Role.INTERN.value,
+    "tier 5 (intern)": Role.INTERN.value,
+    "tier 5 (intern / trainee)": Role.INTERN.value,
+    "tier5": Role.INTERN.value,
+    "intern": Role.INTERN.value,
+    "trainee": Role.INTERN.value,
+    "intern / trainee": Role.INTERN.value,
+    "admin portal": Role.ADMIN.value,
+}
+
+
+def normalize_role(role_name: str | None) -> str | None:
+    if not role_name:
+        return None
+    r = role_name.strip().lower()
+    return TIER_ROLE_MAP.get(r, role_name)
+
+
+class LocalLoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=120, description="Username or email address")
+    password: str = Field(min_length=1, max_length=200)
+    role: str | None = None
+
+
+class AccountCreateRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=50)
+    password: str = Field(min_length=6, max_length=200)
+    role: str
+    display_name: str = Field(min_length=1, max_length=200)
+    email: str = Field(min_length=3, max_length=255, description="Compulsory corporate email address")
+    department: str | None = Field(default=None, max_length=100)
+
+
+class DepartmentCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+
+
+class RegisterRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=50, description="Enterprise Username")
+    email: str = Field(min_length=3, max_length=255, description="Compulsory corporate email address")
+    password: str = Field(min_length=6, max_length=200)
+    display_name: str = Field(min_length=1, max_length=200)
+    department: str | None = Field(default="Operations", max_length=100)
+
+
+class ForgotPasswordRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=100, description="Enterprise User ID or Username")
+    email: str = Field(min_length=3, max_length=255, description="Corporate email address")
+
+
+class ResetPasswordWithTokenRequest(BaseModel):
+    token: str = Field(min_length=10, max_length=256)
+    new_password: str = Field(min_length=6, max_length=200)
+
+
+class PasswordResetRequest(BaseModel):
+    new_password: str = Field(min_length=6, max_length=200)
+
+
+class AccountUpdateRequest(BaseModel):
+    display_name: str | None = None
+    email: str | None = None
+    role: str | None = None
+    department: str | None = None
+    active: bool | None = None
+
+
+class LocalAccountResponse(BaseModel):
+    id: str
+    username: str
+    role: str
+    display_name: str
+    email: str | None = None
+    department: str | None = None
+    active: bool
+    # SQLite stores this as text while PostgreSQL returns a datetime object.
+    # Accept both so account create/list responses serialize on either backend.
+    created_at: datetime | str | None = None
+    email_dispatched: bool = False
+    email_error: str | None = None
+
+
+def _ensure_local_auth_enabled() -> None:
+    if not settings.local_auth_enabled:
+        raise HTTPException(status_code=404, detail="Local sign-in is not enabled.")
+    if not settings.jwt_secret:
+        raise HTTPException(status_code=503, detail="Local sign-in is not configured.")
+
+
+def _check_uecp_status(organization_id: str | None = None, is_admin_exempt: bool = False) -> None:
+    """Enforce UECP control plane freeze/revocation status on local account operations."""
+    if is_admin_exempt:
+        return
+    try:
+        from backend.uecp import get_uecp_config, get_uecp_service
+        cfg = get_uecp_config()
+        if not cfg.enabled:
+            return
+        service = get_uecp_service()
+        state = service.check_access(organization_id=organization_id or settings.local_auth_tenant_id)
+        if not state.allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "access_denied",
+                    "reason": state.reason or "credential_frozen",
+                    "message": "Access unavailable: Your organization's Nanvi access is currently frozen in the UECP control plane. Please contact your administrator.",
+                },
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning(f"UECP check encountered error: {exc}")
+
+
+def _require_account_manager(user: UserIdentity) -> bool:
+    if user.subject == "admin" or (user.email and user.email.lower() == "admin@company.com"):
+        return True
+    if any(r in {"Superior", "CEO", "Admin", "IT Admin"} for r in user.roles):
+        return True
+    if not any(has_permission(role, Permission.USER_MANAGE.value) for role in user.roles):
+        raise HTTPException(status_code=403, detail="You are not allowed to manage user accounts.")
+    return bool(user.roles & ADMINISTRATIVE_ROLES)
+
+
+@router.get("/db-status")
+def get_db_status():
+    """Diagnostic endpoint to verify database connectivity and accounts table."""
+    dsn = settings.supabase_database_url or settings.database_url or ""
+    sanitized_dsn = ""
+    if dsn:
+        import urllib.parse
+        try:
+            parsed = urllib.parse.urlsplit(dsn)
+            sanitized_dsn = f"{parsed.scheme}://{parsed.username}:***@{parsed.hostname}:{parsed.port}{parsed.path}"
+        except Exception:
+            sanitized_dsn = "invalid-url"
+
+    pg_status = {"configured": bool(dsn), "url": sanitized_dsn, "connected": False, "error": None, "account_count": None}
+    if dsn:
+        try:
+            import psycopg
+            from psycopg.rows import dict_row
+            with psycopg.connect(dsn, row_factory=dict_row, connect_timeout=10, prepare_threshold=None) as conn:
+                pg_status["connected"] = True
+                row = conn.execute("SELECT COUNT(*) AS total FROM public.nanvi_local_accounts;").fetchone()
+                pg_status["account_count"] = row["total"] if row else 0
+        except Exception as exc:
+            pg_status["error"] = f"{type(exc).__name__}: {exc}"
+
+    return {
+        "status": "ok",
+        "app_env": settings.app_env,
+        "is_production": settings.is_production,
+        "is_vercel": bool(os.getenv("VERCEL")),
+        "postgres": pg_status,
+    }
+
+
+@router.post("/login")
+def local_login(body: LocalLoginRequest, store: LocalAccountStore = Depends(get_local_account_store)) -> dict[str, object]:
+    _ensure_local_auth_enabled()
+    tenant_id = settings.local_auth_tenant_id
+    effective_role = normalize_role(body.role)
+    try:
+        account = store.authenticate(body.username, body.password, effective_role, tenant_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    if not account:
+        if effective_role:
+            matched_other = store.authenticate(body.username, body.password, None, tenant_id)
+            if matched_other:
+                actual_role = matched_other["role"]
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=f"Your password is valid, but this account uses the '{actual_role}' role. Select '{actual_role}' in Account Role and try again.",
+                )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Email/User ID or password is incorrect.")
+
+    now = int(time.time())
+    user_role = account["role"]
+    is_admin = account.get("username", "").lower() == "admin" or (account.get("email") and account["email"].lower() == "admin@company.com")
+    if is_admin:
+        user_role = "Admin"
+    _check_uecp_status(organization_id=settings.local_auth_tenant_id, is_admin_exempt=is_admin)
+
+    payload = {
+        "sub": account.get("username") or account["id"],
+        "account_id": account["id"],
+        "username": account.get("username") or account["id"],
+        "iss": "nanvi-local",
+        "aud": "nanvi-local",
+        "iat": now,
+        "exp": now + 8 * 60 * 60,
+        "name": account["display_name"],
+        "email": account.get("email"),
+        "tenant_id": settings.local_auth_tenant_id,
+        "department": account.get("department"),
+        "roles": [user_role],
+    }
+    return {
+        "access_token": jwt.encode(payload, settings.jwt_secret, algorithm="HS256"),
+        "token_type": "bearer",
+        "expires_in": 8 * 60 * 60,
+    }
+
+
+@router.get("/accounts", response_model=list[LocalAccountResponse])
+def list_local_accounts(
+    user: UserIdentity = Depends(get_current_user),
+    store: LocalAccountStore = Depends(get_local_account_store),
+) -> list[LocalAccountResponse]:
+    _require_account_manager(user)
+    accounts = store.list_accounts(user.tenant_id or "enterprise-tenant")
+    if not (user.subject == "admin" or user.roles & {Role.SUPERIOR, Role.CEO}):
+        accounts = [account for account in accounts if account["role"] in SUPERVISOR_MANAGED_ROLES]
+    return [LocalAccountResponse(**account) for account in accounts]
+
+
+@router.post("/accounts", response_model=LocalAccountResponse, status_code=status.HTTP_201_CREATED)
+def create_local_account(
+    body: AccountCreateRequest,
+    user: UserIdentity = Depends(get_current_user),
+    store: LocalAccountStore = Depends(get_local_account_store),
+) -> LocalAccountResponse:
+    _check_uecp_status(organization_id=user.tenant_id, is_admin_exempt=user.subject == "admin")
+    is_superior = _require_account_manager(user) and (user.subject == "admin" or bool(user.roles & {Role.SUPERIOR, Role.CEO}))
+    clean_role = normalize_role(body.role) or body.role
+    if not is_superior and clean_role not in SUPERVISOR_MANAGED_ROLES:
+        raise HTTPException(status_code=403, detail="Supervisors can create Project Engineer and Employee accounts only.")
+        raise HTTPException(status_code=403, detail="Supervisors can create Project Engineer, Employee, and Intern accounts only.")
+    clean_email = (body.email or "").strip().lower()
+    if not clean_email or "@" not in clean_email:
+        raise HTTPException(status_code=400, detail="A valid corporate email address is required to create credentials.")
+    try:
+        tenant_id = user.tenant_id or "enterprise-tenant"
+        account = store.create_account(
+            tenant_id=tenant_id,
+            username=body.username,
+            password=body.password,
+            role=clean_role,
+            display_name=body.display_name,
+            email=clean_email,
+            department=body.department,
+            allow_short_password=True,
+            require_email=True,
+        )
+
+        email_dispatched = False
+        email_error = None
+        try:
+            raw_token = store.create_password_reset_token(account["id"], tenant_id=tenant_id, expires_minutes=1440)
+            frontend_base = (
+                os.getenv("FRONTEND_URL")
+                or settings.frontend_url
+                or "https://nanviaienterpriseassistant.vercel.app"
+            ).rstrip("/")
+            if "localhost" in frontend_base:
+                frontend_base = "https://nanviaienterpriseassistant.vercel.app"
+            reset_link = f"{frontend_base}/?token={raw_token}"
+            from backend.security.mailer import send_account_creation_email
+            email_dispatched = send_account_creation_email(
+                to_email=clean_email,
+                recipient_name=body.display_name,
+                username=body.username.strip(),
+                password=body.password,
+                reset_link=reset_link,
+            )
+            if not email_dispatched:
+                email_error = "SMTP service could not deliver the email."
+        except Exception as mail_exc:
+            email_dispatched = False
+            email_error = str(mail_exc)
+            logger.warning("Failed to dispatch welcome email for %s: %s", clean_email, mail_exc)
+
+        account["email_dispatched"] = email_dispatched
+        account["email_error"] = email_error
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return LocalAccountResponse(**account)
+
+
+@router.post("/register", response_model=LocalAccountResponse, status_code=status.HTTP_201_CREATED)
+def register_account(
+    body: RegisterRequest,
+    store: LocalAccountStore = Depends(get_local_account_store),
+) -> LocalAccountResponse:
+    _ensure_local_auth_enabled()
+    tenant_id = settings.local_auth_tenant_id or "enterprise-tenant"
+    try:
+        account = store.create_account(
+            tenant_id=tenant_id,
+            username=body.username,
+            password=body.password,
+            role="Employee",
+            display_name=body.display_name,
+            email=body.email,
+            department=body.department or "Operations",
+            allow_short_password=True,
+            require_email=True,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return LocalAccountResponse(**account)
+
+
+@router.post("/forgot-password")
+def forgot_password(
+    body: ForgotPasswordRequest,
+    store: LocalAccountStore = Depends(get_local_account_store),
+) -> dict[str, object]:
+    _ensure_local_auth_enabled()
+    tenant_id = settings.local_auth_tenant_id or "enterprise-tenant"
+    account = store.find_account_by_username_and_email(body.username, body.email, tenant_id=tenant_id)
+
+    dev_reset_link = None
+    if account:
+        raw_token = store.create_password_reset_token(account["id"], tenant_id=tenant_id, expires_minutes=15)
+        frontend_base = (
+            os.getenv("FRONTEND_URL")
+            or settings.frontend_url
+            or "https://nanviaienterpriseassistant.vercel.app"
+        ).rstrip("/")
+        if "localhost" in frontend_base:
+            frontend_base = "https://nanviaienterpriseassistant.vercel.app"
+        reset_link = f"{frontend_base}/?token={raw_token}"
+        send_password_reset_email(account["email"], account["display_name"], reset_link)
+        if settings.is_development or settings.is_demo:
+            dev_reset_link = reset_link
+
+    resp: dict[str, object] = {
+        "status": "ok",
+        "message": "If the username and email match our directory, a secure recovery link has been dispatched to your email address.",
+    }
+    if dev_reset_link:
+        resp["dev_reset_link"] = dev_reset_link
+    return resp
+
+
+@router.get("/verify-reset-token")
+def verify_reset_token(
+    token: str,
+    store: LocalAccountStore = Depends(get_local_account_store),
+) -> dict[str, object]:
+    _ensure_local_auth_enabled()
+    valid = store.verify_reset_token(token)
+    if not valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The password reset link is invalid or has expired. Please request a new recovery link.",
+        )
+    account = valid["account"]
+    return {
+        "valid": True,
+        "username": account["username"],
+        "email": account["email"],
+        "display_name": account["display_name"],
+    }
+
+
+@router.post("/reset-password")
+def reset_password_with_token(
+    body: ResetPasswordWithTokenRequest,
+    store: LocalAccountStore = Depends(get_local_account_store),
+) -> dict[str, object]:
+    _ensure_local_auth_enabled()
+    try:
+        store.reset_password_with_token(body.token, body.new_password)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return {
+        "status": "ok",
+        "message": "Your password has been reset successfully. You can now sign in.",
+    }
+
+
+@router.get("/departments", response_model=list[str])
+def list_departments(
+    user: UserIdentity = Depends(get_current_user),
+    store: LocalAccountStore = Depends(get_local_account_store),
+) -> list[str]:
+    tenant_id = user.tenant_id or "enterprise-tenant"
+    return store.list_departments(tenant_id)
+
+
+@router.post("/departments", response_model=list[str], status_code=status.HTTP_201_CREATED)
+def add_department(
+    body: DepartmentCreateRequest,
+    user: UserIdentity = Depends(get_current_user),
+    store: LocalAccountStore = Depends(get_local_account_store),
+) -> list[str]:
+    _require_account_manager(user)
+    tenant_id = user.tenant_id or "enterprise-tenant"
+    try:
+        return store.add_department(tenant_id, body.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.patch("/accounts/{account_id}", response_model=LocalAccountResponse)
+def update_local_account(
+    account_id: str,
+    body: AccountUpdateRequest,
+    user: UserIdentity = Depends(get_current_user),
+    store: LocalAccountStore = Depends(get_local_account_store),
+) -> LocalAccountResponse:
+    is_superior = _require_account_manager(user) and (user.subject == "admin" or bool(user.roles & {Role.SUPERIOR, Role.CEO}))
+    tenant_id = user.tenant_id or "enterprise-tenant"
+    try:
+        target = store.get_account(account_id, tenant_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    clean_role = normalize_role(body.role) or body.role
+    if not is_superior:
+        if target["role"] not in SUPERVISOR_MANAGED_ROLES:
+            raise HTTPException(status_code=403, detail="Supervisors can modify Project Engineer and Employee accounts only.")
+        if body.role and body.role not in SUPERVISOR_MANAGED_ROLES:
+            raise HTTPException(status_code=403, detail="Supervisors can modify Project Engineer, Employee, and Intern accounts only.")
+        if clean_role and clean_role not in SUPERVISOR_MANAGED_ROLES:
+            raise HTTPException(status_code=403, detail="Supervisors cannot assign superior roles.")
+
+    if account_id == user.subject and body.active is False:
+        raise HTTPException(status_code=400, detail="You cannot revoke the account you are currently using.")
+    if target["role"] == Role.SUPERIOR.value and body.active is False and store.count_role(tenant_id, Role.SUPERIOR.value) <= 1:
+        raise HTTPException(status_code=400, detail="At least one Superior account must remain active.")
+
+    try:
+        updated = store.update_account(
+            account_id,
+            tenant_id=tenant_id,
+            display_name=body.display_name,
+            email=body.email,
+            role=body.role,
+            role=clean_role,
+            department=body.department,
+            active=body.active,
+        )
+        return LocalAccountResponse(**updated)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/accounts/{account_id}/reset-password", response_model=LocalAccountResponse)
+def reset_local_account_password(
+    account_id: str,
+    body: PasswordResetRequest,
+    user: UserIdentity = Depends(get_current_user),
+    store: LocalAccountStore = Depends(get_local_account_store),
+) -> LocalAccountResponse:
+    _require_account_manager(user)
+    tenant_id = user.tenant_id or "enterprise-tenant"
+    try:
+        updated = store.reset_password(account_id, body.new_password, tenant_id=tenant_id)
+        return LocalAccountResponse(**updated)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/accounts/{account_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_local_account(
+    account_id: str,
+    user: UserIdentity = Depends(get_current_user),
+    store: LocalAccountStore = Depends(get_local_account_store),
+) -> None:
+    is_superior = _require_account_manager(user) and (user.subject == "admin" or bool(user.roles & {Role.SUPERIOR, Role.CEO}))
+    tenant_id = user.tenant_id or "enterprise-tenant"
+    try:
+        target = store.get_account(account_id, tenant_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    if not is_superior and target["role"] not in SUPERVISOR_MANAGED_ROLES:
+        raise HTTPException(status_code=403, detail="Supervisors can remove Project Engineer and Employee accounts only.")
+        raise HTTPException(status_code=403, detail="Supervisors can remove Project Engineer, Employee, and Intern accounts only.")
+    if account_id == user.subject:
+        raise HTTPException(status_code=400, detail="You cannot remove the account you are currently using.")
+    if target["role"] == Role.SUPERIOR.value and store.count_role(tenant_id, Role.SUPERIOR.value) <= 1:
+        raise HTTPException(status_code=400, detail="At least one Superior account must remain active.")
+
+    store.delete_account(account_id, tenant_id)

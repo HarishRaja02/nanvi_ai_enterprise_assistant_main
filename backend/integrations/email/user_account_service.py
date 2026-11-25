@@ -1,0 +1,425 @@
+"""User Email Account Service for multi-tenant and per-user email authorization.
+
+Stores and manages individual user mailbox connections (e.g. Google Gmail, Microsoft 365,
+Yahoo, IMAP OAuth 2.0 refresh tokens, access tokens, and mailbox metadata) per enterprise user.
+Supports Supabase Cloud / PostgreSQL with resilient fallback to encrypted local store.
+Encrypts credentials at rest via CredentialEncryptionService.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+import threading
+import time
+import uuid
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from backend.core.config import settings
+
+logger = logging.getLogger(__name__)
+
+STORAGE_PATH = (
+    Path("/tmp/user_email_accounts.json")
+    if (os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME") or os.getenv("VERCEL_ENV"))
+    else Path("backend/storage/user_email_accounts.json")
+)
+
+ENC_PREFIX = "enc:"
+
+
+def _encrypt_token(token: str | None) -> str:
+    """Encrypt a token for storage at rest if not already encrypted."""
+    if not token or token.startswith(ENC_PREFIX):
+        return token or ""
+    try:
+        from backend.connections.encryption import get_encryption_service
+        enc = get_encryption_service()
+        encrypted_bytes = enc.encrypt(token.encode("utf-8"))
+        return f"{ENC_PREFIX}{encrypted_bytes.decode('utf-8')}"
+    except Exception as exc:
+        logger.warning("Token encryption warning: %s; saving plaintext fallback", exc)
+        return token
+
+
+def _decrypt_token(stored_token: str | None) -> str:
+    """Decrypt a stored token if it starts with the encryption prefix."""
+    if not stored_token:
+        return ""
+    if not stored_token.startswith(ENC_PREFIX):
+        return stored_token
+    try:
+        from backend.connections.encryption import get_encryption_service
+        enc = get_encryption_service()
+        raw_ciphertext = stored_token[len(ENC_PREFIX):].encode("utf-8")
+        return enc.decrypt(raw_ciphertext).decode("utf-8")
+    except Exception as exc:
+        logger.warning("Token decryption error: %s", exc)
+        return ""
+
+
+@dataclass
+class UserEmailAccount:
+    id: str
+    user_id: str
+    email_address: str
+    display_name: str = ""
+    provider: str = "google"
+    access_token: str = ""
+    refresh_token: str = ""
+    token_expires_at: float = 0.0
+    scopes: str = "gmail.readonly,email,profile"
+    avatar_url: str | None = None
+    tenant_id: str = "enterprise-tenant"
+    is_active: bool = True
+    connected_at: str = ""
+    last_synced_at: str | None = None
+
+    def is_token_expired(self) -> bool:
+        """Returns True if the access token is within 60 seconds of expiring."""
+        if self.token_expires_at <= 0.0:
+            return False
+        return time.time() >= (self.token_expires_at - 60)
+
+    def to_safe_dict(self) -> dict[str, Any]:
+        """Return a safe representation containing no raw passwords or tokens."""
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "email_address": self.email_address,
+            "display_name": self.display_name,
+            "provider": self.provider,
+            "scopes": self.scopes,
+            "avatar_url": self.avatar_url,
+            "tenant_id": self.tenant_id,
+            "is_active": self.is_active,
+            "connected_at": self.connected_at,
+            "last_synced_at": self.last_synced_at,
+        }
+
+
+class UserEmailAccountService:
+    """Manages connected email mailboxes per enterprise user."""
+
+    def __init__(self, storage_path: Path | None = None) -> None:
+        self._path = storage_path or STORAGE_PATH
+        self._lock = threading.Lock()
+        self._ensure_storage()
+        self._init_db_schema()
+
+    def _ensure_storage(self) -> None:
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            if not self._path.exists():
+                with open(self._path, "w", encoding="utf-8") as f:
+                    json.dump([], f)
+        except OSError:
+            pass
+
+    def _init_db_schema(self) -> None:
+        """Ensure public.user_email_accounts exists in target database."""
+        target_dsn = settings.supabase_database_url or settings.database_url
+        if not target_dsn:
+            return
+        try:
+            import psycopg
+            with psycopg.connect(target_dsn, autocommit=True, connect_timeout=10, prepare_threshold=None) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS public.user_email_accounts (
+                            id VARCHAR(120) PRIMARY KEY,
+                            user_id VARCHAR(120) NOT NULL,
+                            tenant_id VARCHAR(120) NOT NULL DEFAULT 'enterprise-tenant',
+                            email_address VARCHAR(255) NOT NULL,
+                            display_name VARCHAR(255),
+                            provider VARCHAR(50) NOT NULL DEFAULT 'google',
+                            access_token TEXT,
+                            refresh_token TEXT,
+                            token_expires_at DOUBLE PRECISION,
+                            scopes TEXT,
+                            avatar_url TEXT,
+                            is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                            connected_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                            last_synced_at TIMESTAMP WITH TIME ZONE
+                        );
+                        CREATE INDEX IF NOT EXISTS idx_user_email_user ON public.user_email_accounts(user_id);
+                    """)
+            logger.info("Initialized public.user_email_accounts table in database")
+        except Exception as exc:
+            logger.warning("Could not initialize DB schema for user_email_accounts (using local storage fallback): %s", exc)
+
+    def _read_local_accounts(self) -> list[dict[str, Any]]:
+        try:
+            with open(self._path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+
+    def _write_local_accounts(self, accounts: list[dict[str, Any]]) -> None:
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._path, "w", encoding="utf-8") as f:
+                json.dump(accounts, f, indent=2)
+        except OSError as exc:
+            logger.warning("Could not write local accounts file (%s): %s", self._path, exc)
+
+    def get_accounts(self, user_id: str, tenant_id: str | None = None) -> list[UserEmailAccount]:
+        """Fetch all connected email accounts for a specific user."""
+        db_accounts: list[UserEmailAccount] = []
+        target_dsn = settings.supabase_database_url or settings.database_url
+        if target_dsn:
+            try:
+                import psycopg
+                with psycopg.connect(target_dsn, connect_timeout=10, prepare_threshold=None) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            SELECT id, user_id, tenant_id, email_address, display_name, provider,
+                                   access_token, refresh_token, token_expires_at, scopes, avatar_url,
+                                   is_active, connected_at, last_synced_at
+                            FROM public.user_email_accounts
+                            WHERE (user_id = %s OR user_id IN (
+                                SELECT id FROM public.nanvi_local_accounts WHERE username = %s
+                            ) OR user_id IN (
+                                SELECT username FROM public.nanvi_local_accounts WHERE id = %s
+                            )) AND is_active = TRUE
+                            ORDER BY connected_at DESC
+                        """, (user_id, user_id, user_id))
+                        rows = cur.fetchall()
+                        if rows:
+                            db_accounts = [
+                                UserEmailAccount(
+                                    id=r[0],
+                                    user_id=r[1],
+                                    tenant_id=r[2] or "enterprise-tenant",
+                                    email_address=r[3],
+                                    display_name=r[4] or "",
+                                    provider=r[5] or "google",
+                                    access_token=_decrypt_token(r[6]),
+                                    refresh_token=_decrypt_token(r[7]),
+                                    token_expires_at=float(r[8] or 0.0),
+                                    scopes=r[9] or "",
+                                    avatar_url=r[10],
+                                    is_active=bool(r[11]),
+                                    connected_at=str(r[12] or ""),
+                                    last_synced_at=str(r[13]) if r[13] else None,
+                                )
+                                for r in rows
+                            ]
+            except Exception as exc:
+                logger.debug("Database fetch failed, checking local store: %s", exc)
+
+        with self._lock:
+            data = self._read_local_accounts()
+            local_accounts = []
+            for d in data:
+                if d.get("user_id") == user_id and d.get("is_active", True):
+                    item = dict(d)
+                    item["access_token"] = _decrypt_token(item.get("access_token"))
+                    item["refresh_token"] = _decrypt_token(item.get("refresh_token"))
+                    local_accounts.append(UserEmailAccount(**item))
+
+        # Also check Connections Hub for live connections across all supported email providers
+        hub_accounts: list[UserEmailAccount] = []
+        try:
+            from backend.connections.manager import get_connection_manager
+            from backend.security.models import UserIdentity
+            from backend.security.authorization.rbac import Role
+            cm = get_connection_manager()
+            mock_user = UserIdentity(
+                subject=user_id,
+                issuer="internal",
+                tenant_id=tenant_id or "enterprise-tenant",
+                roles=frozenset({Role.SUPERIOR, Role.CEO, Role.EMPLOYEE, Role.IT_ADMIN}),
+            )
+            for prov in ("google", "microsoft365", "outlook", "yahoo", "imap"):
+                try:
+                    client = cm.get_client_for_agent(prov, mock_user)
+                    if hasattr(client, "_account") and client._account:
+                        h_acc = client._account
+                        h_acc.user_id = user_id
+                        hub_accounts.append(h_acc)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        all_candidates = db_accounts + local_accounts + hub_accounts
+        if not all_candidates:
+            return []
+
+        # Merge by email address, prioritizing unexpired active tokens
+        merged: dict[str, UserEmailAccount] = {}
+        for acc in all_candidates:
+            em = acc.email_address.lower()
+            if em not in merged:
+                merged[em] = acc
+            else:
+                curr = merged[em]
+                if curr.is_token_expired() and not acc.is_token_expired():
+                    merged[em] = acc
+                elif not curr.access_token and acc.access_token:
+                    merged[em] = acc
+                elif (acc.connected_at or "") > (curr.connected_at or "") and not acc.is_token_expired():
+                    merged[em] = acc
+
+        return list(merged.values())
+
+    def get_active_account(self, user_id: str) -> UserEmailAccount | None:
+        """Get the primary active connected mailbox for the given user."""
+        accounts = self.get_accounts(user_id)
+        if accounts:
+            return accounts[0]
+        # Check alias if demo- prefix or bare username (e.g. demo-ceo <-> ceo)
+        alias = user_id.replace("demo-", "") if user_id.startswith("demo-") else f"demo-{user_id}"
+        alias_accounts = self.get_accounts(alias)
+        if alias_accounts:
+            return alias_accounts[0]
+        return None
+
+    def save_account(self, account: UserEmailAccount) -> UserEmailAccount:
+        """Upsert a connected email account in the database and local replica."""
+        if not account.id:
+            account.id = str(uuid.uuid4())
+        if not account.connected_at:
+            account.connected_at = datetime.now(timezone.utc).isoformat()
+
+        encrypted_access = _encrypt_token(account.access_token)
+        encrypted_refresh = _encrypt_token(account.refresh_token)
+
+        # 1. Update Database if available
+        target_dsn = settings.supabase_database_url or settings.database_url
+        if target_dsn:
+            try:
+                import psycopg
+                with psycopg.connect(target_dsn, autocommit=True, connect_timeout=10, prepare_threshold=None) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT id FROM public.user_email_accounts WHERE user_id = %s AND email_address = %s",
+                            (account.user_id, account.email_address),
+                        )
+                        existing_row = cur.fetchone()
+                        if existing_row:
+                            account.id = existing_row[0]
+
+                        cur.execute("""
+                            INSERT INTO public.user_email_accounts (
+                                id, user_id, tenant_id, email_address, display_name, provider,
+                                access_token, refresh_token, token_expires_at, scopes, avatar_url,
+                                is_active, connected_at, last_synced_at
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                            ON CONFLICT (user_id, email_address) DO UPDATE SET
+                                access_token = EXCLUDED.access_token,
+                                refresh_token = EXCLUDED.refresh_token,
+                                token_expires_at = EXCLUDED.token_expires_at,
+                                scopes = EXCLUDED.scopes,
+                                avatar_url = EXCLUDED.avatar_url,
+                                display_name = EXCLUDED.display_name,
+                                is_active = EXCLUDED.is_active,
+                                last_synced_at = NOW();
+                        """, (
+                            account.id, account.user_id, account.tenant_id, account.email_address,
+                            account.display_name, account.provider, encrypted_access,
+                            encrypted_refresh, account.token_expires_at, account.scopes,
+                            account.avatar_url, account.is_active,
+                        ))
+            except Exception as exc:
+                logger.warning("Could not persist email account to DB: %s", exc)
+
+        # 2. Update local JSON replica with encrypted tokens
+        with self._lock:
+            accounts = self._read_local_accounts()
+            updated = False
+            stored_dict = asdict(account)
+            stored_dict["access_token"] = encrypted_access
+            stored_dict["refresh_token"] = encrypted_refresh
+            for i, acc in enumerate(accounts):
+                if acc.get("id") == account.id or (
+                    acc.get("user_id") == account.user_id and acc.get("email_address") == account.email_address
+                ):
+                    accounts[i] = stored_dict
+                    updated = True
+                    break
+            if not updated:
+                accounts.append(stored_dict)
+            self._write_local_accounts(accounts)
+
+        return account
+
+    def update_tokens(self, account_id: str, access_token: str, expires_in: int) -> None:
+        """Update access token and expiry time for an account."""
+        expires_at = time.time() + expires_in
+        encrypted_access = _encrypt_token(access_token)
+
+        target_dsn = settings.supabase_database_url or settings.database_url
+        if target_dsn:
+            try:
+                import psycopg
+                with psycopg.connect(target_dsn, autocommit=True, connect_timeout=10, prepare_threshold=None) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            UPDATE public.user_email_accounts
+                            SET access_token = %s, token_expires_at = %s, last_synced_at = NOW()
+                            WHERE id = %s
+                        """, (encrypted_access, expires_at, account_id))
+            except Exception as exc:
+                logger.warning("Could not update token in DB: %s", exc)
+
+        with self._lock:
+            accounts = self._read_local_accounts()
+            for acc in accounts:
+                if acc.get("id") == account_id:
+                    acc["access_token"] = encrypted_access
+                    acc["token_expires_at"] = expires_at
+                    acc["last_synced_at"] = datetime.now(timezone.utc).isoformat()
+                    break
+            self._write_local_accounts(accounts)
+
+    def disconnect_account(self, user_id: str, account_id: str | None = None) -> bool:
+        """Disconnect/deactivate an email account for a user."""
+        alias = user_id.replace("demo-", "") if user_id.startswith("demo-") else f"demo-{user_id}"
+        target_users = {user_id, alias}
+
+        target_dsn = settings.supabase_database_url or settings.database_url
+        if target_dsn:
+            try:
+                import psycopg
+                with psycopg.connect(target_dsn, autocommit=True, connect_timeout=10, prepare_threshold=None) as conn:
+                    with conn.cursor() as cur:
+                        if account_id:
+                            cur.execute("""
+                                UPDATE public.user_email_accounts
+                                SET is_active = FALSE
+                                WHERE user_id IN (%s, %s) AND id = %s
+                            """, (user_id, alias, account_id))
+                        else:
+                            cur.execute("""
+                                UPDATE public.user_email_accounts
+                                SET is_active = FALSE
+                                WHERE user_id IN (%s, %s)
+                            """, (user_id, alias))
+            except Exception as exc:
+                logger.warning("Could not disconnect account in DB: %s", exc)
+
+        with self._lock:
+            accounts = self._read_local_accounts()
+            for acc in accounts:
+                if acc.get("user_id") in target_users:
+                    if account_id is None or acc.get("id") == account_id:
+                        acc["is_active"] = False
+            self._write_local_accounts(accounts)
+
+        return True
+
+
+# Global singleton instance
+_account_service: UserEmailAccountService | None = None
+
+
+def get_user_email_account_service() -> UserEmailAccountService:
+    global _account_service
+    if _account_service is None:
+        _account_service = UserEmailAccountService()
+    return _account_service

@@ -1,0 +1,12 @@
+tantivy-0.27.0.dist-info/INSTALLER,sha256=zuuue4knoyJ-UwPPXg8fezS7VCrXJQrAP7zeNuwvFQg,4
+tantivy-0.27.0.dist-info/METADATA,sha256=mPLEhLodQUKucPViMwaMS_8SuTQEruI7vMop0wEMz5A,1824
+tantivy-0.27.0.dist-info/RECORD,,
+tantivy-0.27.0.dist-info/REQUESTED,sha256=47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU,0
+tantivy-0.27.0.dist-info/WHEEL,sha256=I37eTNpE2wbBLxuGAyG7p6lFvJQiIjnLN05rBA0wN9g,96
+tantivy-0.27.0.dist-info/licenses/LICENSE,sha256=plvtrpwmMIFWg1J8E02BY14eLUCpNUhMQy3IjaCvL7U,1107
+tantivy-0.27.0.dist-info/sboms/tantivy.cyclonedx.json,sha256=PrxBOwYzUxx2BkDi-Hay0lqrcExBN6FLDd5TyXhfRAY,213951
+tantivy/__init__.py,sha256=pwQME6G-2TdBk9Rn8JTxvlyxtmky6BA9_WCjkyC29pI,22
+tantivy/__pycache__/__init__.cpython-313.pyc,,
+tantivy/py.typed,sha256=47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU,0
+tantivy/tantivy.pyd,sha256=acIiHCzhqJa_e0kxR6dQtVAfWq69_dDbvBdvxIPvhwI,11618816
+tantivy/tantivy.pyi,sha256=VHIA_Po0UVv8lnjaiTIQZfadMxwImjDHHdzPH-VTF5k,18928

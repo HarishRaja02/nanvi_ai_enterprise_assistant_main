@@ -1,0 +1,652 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ContextPanel } from "./components/layout/ContextPanel";
+import { Sidebar } from "./components/layout/Sidebar";
+import { TopBar } from "./components/layout/TopBar";
+import { HelpPanel } from "./components/layout/HelpPanel";
+import { CommandPalette } from "./components/layout/CommandPalette";
+import { ChatView } from "./components/chat/ChatView";
+import { SourceDialog } from "./components/chat/SourceDialog";
+import { LandingPage } from "./components/landing/LandingPage";
+import { useToast } from "./components/ui/Toast";
+import { EnterpriseLoginGateway } from "./login/App";
+import { SessionSplash } from "./features/auth/SessionSplash";
+import { AccessUnavailableView } from "./features/auth/AccessUnavailableView";
+import { AuditPage } from "./features/workspaces/AuditPage";
+import { WorkspacePage } from "./features/workspaces/WorkspacePage";
+import { SettingsPage } from "./features/settings/SettingsPage";
+import { TextSizePage } from "./features/settings/TextSizePage";
+import { VoiceAssistantMode } from "./features/voice/VoiceAssistantMode";
+import { AdminDashboard } from "./features/admin/AdminDashboard";
+import { UserLogsPage } from "./features/logs/UserLogsPage";
+import { ReportIssueModal } from "./components/support/ReportIssueModal";
+import { PrivacyPolicyPage } from "./features/legal/PrivacyPolicyPage";
+import { TermsOfServicePage } from "./features/legal/TermsOfServicePage";
+
+import { useChat } from "./hooks/useChat";
+import { useHistory } from "./hooks/useHistory";
+import { useSession } from "./hooks/useSession";
+import { useTheme } from "./hooks/useTheme";
+import { useFontScale } from "./hooks/useFontScale";
+import { View, formatRoleTier, isRole, permissionsFor, viewLabel, visibleNav } from "./lib/access";
+import { conversationTitle } from "./lib/format";
+import { ROTATING_STARTERS, visiblePrompts } from "./lib/prompts";
+import { MailboxModal } from "./components/email/MailboxModal";
+import { FolderPickerModal } from "./components/ui/FolderPickerModal";
+import { useCompanyFolder } from "./hooks/useCompanyFolder";
+import type { SourceView } from "./lib/sources";
+import type { ConversationSummary } from "./types";
+import type { EmailStatusResponse } from "./api";
+
+const WIDE = "(min-width: 1100px)";
+
+
+export function App() {
+  const { theme, toggleTheme } = useTheme();
+  const { fontScale, setFontScale } = useFontScale();
+  const notify = useToast();
+  const session = useSession();
+  const { api, identity } = session;
+  const { history, loading: historyLoading, error: historyError, reload: reloadHistory, deleteConversation } = useHistory(api, identity);
+  const chat = useChat(api, identity, reloadHistory);
+  const folderScopeKey = identity ? `${identity.tenant_id || "default"}::${identity.subject}` : "";
+  const companyFolder = useCompanyFolder(identity ? api : undefined, folderScopeKey);
+
+  const [view, setView] = useState<View>(() => {
+    const path = window.location.pathname.toLowerCase();
+    const params = new URLSearchParams(window.location.search);
+    if (path.includes("/settings") || params.has("tab") || params.has("connected")) {
+      return "Settings";
+    }
+    return "Chat";
+  });
+  const [navOpen, setNavOpen] = useState(false);
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [focusToken, setFocusToken] = useState(0);
+  const [openedSource, setOpenedSource] = useState<SourceView | null>(null);
+  const [mailboxOpen, setMailboxOpen] = useState(false);
+  const [mailboxStatus, setMailboxStatus] = useState<EmailStatusResponse | null>(null);
+  const [folderPickerOpen, setFolderPickerOpen] = useState(false);
+  const [voiceModeOpen, setVoiceModeOpen] = useState(false);
+  const [reportModalOpen, setReportModalOpen] = useState(false);
+  const [showLogin, setShowLogin] = useState(() => {
+    if (typeof window !== "undefined") {
+      const p = new URLSearchParams(window.location.search);
+      if (p.get("view") === "login") return true;
+      if (p.has("token")) return true;
+      if (Boolean((window as any).electronAPI?.isDesktop)) return true;
+    }
+    return false;
+  });
+
+  const [legalRoute, setLegalRoute] = useState<"privacy" | "terms" | null>(() => {
+    if (typeof window !== "undefined") {
+      const p = window.location.pathname.toLowerCase();
+      if (p === "/privacy" || p.startsWith("/privacy/")) return "privacy";
+      if (p === "/terms" || p.startsWith("/terms/")) return "terms";
+    }
+    return null;
+  });
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const p = window.location.pathname.toLowerCase();
+      if (p === "/privacy" || p.startsWith("/privacy/")) {
+        setLegalRoute("privacy");
+      } else if (p === "/terms" || p.startsWith("/terms/")) {
+        setLegalRoute("terms");
+      } else {
+        setLegalRoute(null);
+      }
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  const navigateToLegal = useCallback((route: "privacy" | "terms") => {
+    setLegalRoute(route);
+    if (window.history && window.history.pushState) {
+      window.history.pushState({}, "", `/${route}`);
+    }
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }, []);
+
+  const navigateBackFromLegal = useCallback(() => {
+    setLegalRoute(null);
+    if (window.history && window.history.pushState) {
+      window.history.pushState({}, "", "/");
+    }
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }, []);
+  const mainRef = useRef<HTMLElement>(null);
+  const previousView = useRef<View>("Chat");
+
+
+  const isDesktop = Boolean(
+    (typeof window !== "undefined" && Boolean(window.electronAPI?.isDesktop)) ||
+    import.meta.env.VITE_APP_TARGET === "desktop"
+  );
+
+  // UX-only capability set derived from backend-reported roles. Authorization stays server-side.
+  const permissions = useMemo(() => permissionsFor(identity?.roles ?? []), [identity]);
+  const canAccessAdmin = useMemo(() => {
+    // Admin dashboard is strictly web-only. The desktop client application is for user accounts only.
+    if (isDesktop) return false;
+    if (!identity) return false;
+    return (
+      identity.subject === "admin" ||
+      Boolean(identity.email && identity.email.toLowerCase().includes("admin@company")) ||
+      identity.roles.some((r) => r.toLowerCase() === "admin") ||
+      Boolean(identity.name && identity.name.toLowerCase().includes("system administrator")) ||
+      permissions.includes("ADMIN_ACCESS")
+    );
+  }, [identity, permissions, isDesktop]);
+  const groups = useMemo(() => visibleNav(permissions, canAccessAdmin), [permissions, canAccessAdmin]);
+  const allowedViews = useMemo(() => {
+    const list = groups.flatMap((g) => g.items.map((i) => i.id));
+    if (canAccessAdmin && !list.includes("AdminDashboard")) {
+      list.push("AdminDashboard");
+    }
+    if (!list.includes("TextSize")) {
+      list.push("TextSize");
+    }
+    return list;
+  }, [groups, canAccessAdmin]);
+  const activeView: View = allowedViews.includes(view) ? view : "Chat";
+  const starters = useMemo(() => visiblePrompts(ROTATING_STARTERS, permissions), [permissions]);
+
+  // Reset navigation only after session check confirms no user is logged in
+  useEffect(() => {
+    if (!session.checking && !identity) {
+      setView("Chat");
+      setNavOpen(false);
+      setPaletteOpen(false);
+      setHelpOpen(false);
+      setVoiceModeOpen(false);
+      setMailboxStatus(null);
+    }
+  }, [session.checking, identity]);
+
+  // Fetch mailbox connection status
+  useEffect(() => {
+    if (identity) {
+      api.emailStatus().then(setMailboxStatus).catch(() => {});
+    } else {
+      setMailboxStatus(null);
+    }
+  }, [identity, api, mailboxOpen]);
+
+  // Handle Google OAuth callback from URL query param
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("code");
+    const state = params.get("state") || undefined;
+    const connected = params.get("connected");
+    const statusParam = params.get("status");
+
+    if (connected && statusParam) {
+      const err = params.get("error");
+      window.history.replaceState({}, document.title, window.location.pathname);
+      if (statusParam === "success") {
+        notify(`Successfully connected ${connected}!`, "success");
+        setView("Settings");
+        api.emailStatus().then(setMailboxStatus).catch(() => {});
+        window.dispatchEvent(new CustomEvent("nanvi:connections-updated", { detail: { provider: connected, status: statusParam } }));
+      } else {
+        notify(`Failed to connect ${connected}: ${err || "Unknown error"}`, "error");
+      }
+    } else if (code && identity) {
+      const isDesktop = Boolean((window as any).electronAPI?.isDesktop || window.location.protocol === "file:");
+      const callbackOrigin = !isDesktop && window.location.origin && window.location.origin !== "null" && !window.location.origin.startsWith("file:")
+        ? window.location.origin
+        : undefined;
+      window.history.replaceState({}, document.title, window.location.pathname);
+      api
+        .connectGoogleMailbox(code, state, callbackOrigin)
+        .then((res) => {
+          notify(`Mailbox connected: ${res.account.email_address}`, "success");
+          api.emailStatus().then(setMailboxStatus).catch(() => {});
+        })
+        .catch((err) => {
+          notify(`Google mailbox connection failed: ${err.message || "Unknown error"}`, "error");
+        });
+    }
+  }, [identity, api, notify]);
+
+  // Listen for OAuth callbacks delivered via desktop loopback server
+  useEffect(() => {
+    if (typeof window === "undefined" || !(window as any).electronAPI?.onOAuthCallback) return;
+    const cleanup = (window as any).electronAPI.onOAuthCallback(async (payload: { code?: string; state?: string; provider?: string; pathname?: string; connected?: string; status?: string; error?: string }) => {
+      const { code, state, provider, pathname, connected, status: oauthStatus, error: oauthErr } = payload || {};
+      if (connected && oauthStatus) {
+        if (oauthStatus === "success") {
+          notify(`Successfully connected ${connected}!`, "success");
+          api.emailStatus().then(setMailboxStatus).catch(() => {});
+          window.dispatchEvent(new CustomEvent("nanvi:connections-updated", { detail: { provider: connected, status: oauthStatus } }));
+        } else {
+          notify(`Failed to connect ${connected}: ${oauthErr || "Unknown error"}`, "error");
+        }
+        return;
+      }
+      if (code && identity) {
+        try {
+          if (provider === "microsoft" || (state && state.startsWith("ms_"))) {
+            const msRedirect = pathname && pathname !== "/" ? `http://localhost:5173${pathname}` : "http://localhost:5173/auth/microsoft/callback";
+            const res = await api.connectMicrosoftMailbox(code, state, msRedirect);
+            notify(`Microsoft mailbox connected: ${res.account.email_address}`, "success");
+          } else {
+            const gRedirect = pathname && pathname !== "/" ? `http://localhost:5173${pathname}` : "http://localhost:5173";
+            const res = await api.connectGoogleMailbox(code, state, gRedirect);
+            notify(`Google mailbox connected: ${res.account.email_address}`, "success");
+          }
+          api.emailStatus().then(setMailboxStatus).catch(() => {});
+          window.dispatchEvent(new CustomEvent("nanvi:connections-updated", { detail: { provider: provider || "google", status: "success" } }));
+        } catch (err: any) {
+          notify(`Mailbox connection failed: ${err.message || "Unknown error"}`, "error");
+        }
+      }
+    });
+    return () => {
+      if (typeof cleanup === "function") cleanup();
+    };
+  }, [identity, api, notify]);
+
+
+
+  // Keep the details panel from opening as an overlay when the window narrows.
+  useEffect(() => {
+    const mq = window.matchMedia?.(WIDE);
+    if (!mq) return;
+    const onChange = (e: MediaQueryListEvent) => {
+      if (!e.matches) setPanelOpen(false);
+    };
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+
+  // Global Ctrl+K / Cmd+K listener to toggle command palette
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        setPaletteOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Escape closes the mobile drawer / overlay panel.
+  useEffect(() => {
+    if (!navOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setNavOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [navOpen]);
+
+  // Announce and orient on navigation: title for the tab, focus for keyboard and screen-reader users.
+  useEffect(() => {
+    document.title = identity
+      ? `${viewLabel(activeView)} — Nanvi AI Enterprise Assistant`
+      : "Nanvi AI Enterprise Assistant";
+  }, [activeView, identity]);
+
+  useEffect(() => {
+    // Compare with the previous view rather than counting renders: StrictMode runs effects twice on mount.
+    if (previousView.current === activeView) return;
+    previousView.current = activeView;
+    if (activeView === "Chat") setFocusToken((t) => t + 1);
+    else mainRef.current?.focus({ preventScroll: true });
+  }, [activeView]);
+
+  const goTo = useCallback((next: View, tab?: string) => {
+    const target = (next as string) === "Reports" ? "Chat" : next;
+    const url = new URL(window.location.href);
+    if (tab) {
+      url.searchParams.set("tab", tab);
+    } else {
+      url.searchParams.delete("tab");
+    }
+    window.history.replaceState({}, "", url.toString());
+    setView(target);
+    setNavOpen(false);
+  }, []);
+
+  const newConversation = useCallback(() => {
+    chat.reset();
+    setView("Chat");
+    setNavOpen(false);
+    setFocusToken((t) => t + 1);
+  }, [chat]);
+
+  const selectConversation = useCallback(
+    (c: ConversationSummary) => {
+      chat.resume({ id: c.conversation_id, title: conversationTitle(c) });
+      setView("Chat");
+      setNavOpen(false);
+      setFocusToken((t) => t + 1);
+    },
+    [chat]
+  );
+
+  const deleteConversationHandler = useCallback(
+    async (conversationId: string) => {
+      const ok = await deleteConversation(conversationId);
+      if (ok && chat.conversationId === conversationId) {
+        chat.reset();
+      }
+    },
+    [deleteConversation, chat]
+  );
+
+  /** Module pages and widgets hand their question to the assistant. */
+  const ask = useCallback(
+    (prompt: string) => {
+      setView("Chat");
+      void chat.send(prompt);
+    },
+    [chat]
+  );
+
+  const openSource = useCallback((source: SourceView) => setOpenedSource(source), []);
+
+  useEffect(() => {
+    const onPreviewFile = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail && detail.path) {
+        setOpenedSource({
+          id: detail.path,
+          kind: "file",
+          format: "FILE",
+          title: detail.name || detail.path,
+          location: detail.full_path || detail.path,
+        });
+      }
+    };
+    window.addEventListener("nanvi:preview-file", onPreviewFile);
+    return () => window.removeEventListener("nanvi:preview-file", onPreviewFile);
+  }, []);
+
+  const downloadReport = useCallback(
+    async (reportId: string) => {
+      if (!permissions.includes("REPORT_DOWNLOAD")) {
+        notify("Report download is not permitted for this session.", "danger");
+        return;
+      }
+      try {
+        const { download_url } = await api.reportDownloadUrl(reportId);
+        const parsed = new URL(download_url, window.location.origin);
+        if (parsed.origin !== window.location.origin) throw new Error("Secure download destination rejected.");
+        const a = document.createElement("a");
+        a.href = parsed.toString();
+        a.download = "";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        notify("Document download started.", "success");
+      } catch (error) {
+        notify(error instanceof Error ? error.message : "Secure report download failed.", "danger");
+      }
+    },
+    [api, notify, permissions]
+  );
+
+  if (legalRoute === "privacy") {
+    return (
+      <PrivacyPolicyPage
+        onNavigateToTerms={() => navigateToLegal("terms")}
+        onBack={navigateBackFromLegal}
+      />
+    );
+  }
+
+  if (legalRoute === "terms") {
+    return (
+      <TermsOfServicePage
+        onNavigateToPrivacy={() => navigateToLegal("privacy")}
+        onBack={navigateBackFromLegal}
+      />
+    );
+  }
+
+  if (session.checking) {
+    return <SessionSplash title="Securing your session" detail="Checking your Nanvi identity and access policy…" />;
+  }
+
+  if (!identity) {
+    if (!showLogin) {
+      return (
+        <LandingPage
+          onLaunchWebApp={() => {
+            setShowLogin(true);
+            if (window.history && window.history.pushState) {
+              const url = new URL(window.location.href);
+              url.searchParams.set("view", "login");
+              window.history.pushState({}, "", url.toString());
+            }
+          }}
+          onNavigatePrivacy={() => navigateToLegal("privacy")}
+          onNavigateTerms={() => navigateToLegal("terms")}
+        />
+      );
+    }
+
+    return (
+      <EnterpriseLoginGateway
+        error={session.authError}
+        onLogin={session.signIn}
+        loading={session.signingIn}
+        onBackToLanding={() => {
+          setShowLogin(false);
+          if (window.history && window.history.replaceState) {
+            const url = new URL(window.location.href);
+            url.searchParams.delete("view");
+            window.history.replaceState({}, "", url.toString());
+          }
+        }}
+        onNavigatePrivacy={() => navigateToLegal("privacy")}
+        onNavigateTerms={() => navigateToLegal("terms")}
+      />
+    );
+  }
+
+  if (identity.uecp && identity.uecp.allowed === false) {
+    if (!canAccessAdmin) {
+      return <AccessUnavailableView onSignOut={session.logout} />;
+    }
+  }
+
+  const displayName = identity.name || identity.email || "User";
+  const primaryRole = canAccessAdmin ? "Admin" : (identity.roles.find(isRole) ?? "Authorized user");
+  const canManageLocalFolders = permissions.includes("CONNECTION_READ");
+  const isChat = activeView === "Chat";
+  const subtitle = isChat
+    ? chat.resumed
+      ? chat.resumed.title
+      : chat.messages.length
+      ? "Current conversation"
+      : "New conversation"
+    : undefined;
+
+  return (
+    <div className="app" data-nav-open={navOpen} data-panel-open={isChat && panelOpen}>
+      <a className="skip-link" href="#main">
+        Skip to main content
+      </a>
+
+      <Sidebar
+        groups={groups}
+        active={activeView}
+        onNavigate={goTo}
+        onNewConversation={newConversation}
+        history={history}
+        historyLoading={historyLoading}
+        historyError={historyError}
+        onRetryHistory={() => void reloadHistory()}
+        onOpenHelp={() => {
+          setHelpOpen(true);
+          setNavOpen(false);
+        }}
+        activeConversationId={chat.conversationId}
+        onSelectConversation={selectConversation}
+        onDeleteConversation={deleteConversationHandler}
+        userName={displayName}
+        userRole={formatRoleTier(primaryRole)}
+        onSignOut={session.logout}
+        onCloseDrawer={() => setNavOpen(false)}
+      />
+      <div
+        className="scrim"
+        onClick={() => {
+          setNavOpen(false);
+          setPanelOpen(window.matchMedia?.(WIDE).matches ?? false);
+        }}
+        aria-hidden="true"
+      />
+
+      <div className="app-main">
+        <TopBar
+          title={isChat ? "Ask Nanvi" : viewLabel(activeView)}
+          subtitle={subtitle}
+          onOpenNav={() => setNavOpen(true)}
+          onOpenPalette={() => setPaletteOpen(true)}
+          theme={theme}
+          onToggleTheme={toggleTheme}
+          panel={isChat ? { open: panelOpen, onToggle: () => setPanelOpen((o) => !o) } : undefined}
+          onOpenReportIssue={() => setReportModalOpen(true)}
+          canAccessAdmin={canAccessAdmin}
+          onOpenAdmin={() => goTo("AdminDashboard")}
+          connectedFolder={canManageLocalFolders && companyFolder.folderPath ? {
+            path: companyFolder.folderPath,
+            name: companyFolder.folderName,
+            fileCount: companyFolder.fileCount,
+          } : undefined}
+          onOpenFolderPicker={canManageLocalFolders ? () => setFolderPickerOpen(true) : undefined}
+        />
+
+        <div className="app-body">
+          <main id="main" ref={mainRef} className="content" tabIndex={-1}>
+            {activeView === "Chat" && (
+              <ChatView
+                messages={chat.messages}
+                busy={chat.busy}
+                resumed={chat.resumed}
+                loadingHistory={chat.loadingHistory}
+                starters={starters}
+                focusToken={focusToken}
+                ragEnabled={chat.ragEnabled}
+                onToggleRag={chat.setRagEnabled}
+                api={api}
+                identity={identity}
+                onSend={chat.send}
+                onRetry={chat.retry}
+                onOpenSource={openSource}
+                onDownload={(id) => void downloadReport(id)}
+                onNewConversation={newConversation}
+                onOpenVoiceMode={undefined}
+                onSelectSource={chat.selectSource}
+              />
+            )}
+            {activeView === "Audit" && <AuditPage onReturn={() => goTo("Chat")} />}
+            {activeView === "Settings" && (
+              <SettingsPage api={api} identity={identity} fontScale={fontScale} onFontScaleChange={setFontScale} />
+            )}
+            {activeView === "TextSize" && (
+              <TextSizePage fontScale={fontScale} onFontScaleChange={setFontScale} onReturn={() => goTo("Chat")} />
+            )}
+            {activeView === "Logs" && (
+              <UserLogsPage api={api} onReturn={() => goTo("Chat")} />
+            )}
+            {activeView === "AdminDashboard" && (
+              <AdminDashboard api={api} identity={identity} onNavigateHome={() => goTo("Chat")} />
+            )}
+            {activeView !== "Chat" && activeView !== "Audit" && activeView !== "Settings" && activeView !== "TextSize" && activeView !== "Logs" && activeView !== "AdminDashboard" && (
+              <WorkspacePage view={activeView} permissions={permissions} onAsk={ask} api={api} />
+            )}
+
+          </main>
+          {isChat && panelOpen && (
+            <ContextPanel
+              identity={identity}
+              messages={chat.messages}
+              onOpenSource={openSource}
+              onClose={() => setPanelOpen(false)}
+              onAsk={ask}
+              folderPath={companyFolder.folderPath}
+              folderName={companyFolder.folderName}
+              folderFileCount={companyFolder.fileCount}
+              onOpenFolderPicker={canManageLocalFolders ? () => setFolderPickerOpen(true) : undefined}
+            />
+          )}
+        </div>
+      </div>
+
+      {openedSource && <SourceDialog source={openedSource} api={api} onClose={() => setOpenedSource(null)} />}
+
+      {helpOpen && (
+        <HelpPanel
+          onClose={() => setHelpOpen(false)}
+          onNavigate={(nextView, tab) => {
+            goTo(nextView, tab);
+            setHelpOpen(false);
+          }}
+          onNavigateLegal={navigateToLegal}
+        />
+      )}
+
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        onNavigate={goTo}
+        onAsk={ask}
+        onNewConversation={newConversation}
+        ragEnabled={chat.ragEnabled}
+        onToggleRag={chat.setRagEnabled}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+      />
+
+      <MailboxModal
+        api={api}
+        open={mailboxOpen}
+        onClose={() => setMailboxOpen(false)}
+        onAskPrompt={ask}
+      />
+
+      {canManageLocalFolders && (
+        <FolderPickerModal
+          key={folderScopeKey || "anon"}
+          api={api}
+          open={folderPickerOpen}
+          onClose={() => setFolderPickerOpen(false)}
+        />
+      )}
+
+      {voiceModeOpen && (
+        <VoiceAssistantMode
+          api={api}
+          identity={identity}
+          conversationId={chat.conversationId}
+          ragEnabled={chat.ragEnabled}
+          onClose={() => setVoiceModeOpen(false)}
+          onOpenSource={openSource}
+          onUpdateConversationId={(id) => chat.setConversationId(id)}
+          onAddChatMessage={(userText, assistantReply) => {
+            chat.appendTurn(userText, assistantReply);
+          }}
+        />
+      )}
+
+      <ReportIssueModal
+        api={api}
+        identity={identity}
+        open={reportModalOpen}
+        onClose={() => setReportModalOpen(false)}
+      />
+    </div>
+  );
+}
+

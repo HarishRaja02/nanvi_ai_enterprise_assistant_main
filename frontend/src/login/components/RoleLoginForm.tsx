@@ -1,0 +1,402 @@
+import { useState, useRef, useEffect, type FormEvent } from "react";
+import { ChevronDown, Crown, Eye, EyeOff, LoaderCircle, ShieldCheck } from "lucide-react";
+import type { LocalAccountRole } from "../../api";
+
+type RoleOption = {
+  id: LocalAccountRole;
+  label: string;
+  tier?: string;
+  badge?: string;
+  description: string;
+};
+
+const ROLES: RoleOption[] = [
+  {
+    id: "Superior",
+    label: "Tier 1 (Superior)",
+    label: "Tier 1",
+    tier: "Tier 1",
+    badge: "Executive",
+    description: "Executive Leadership & Top-Level Access (CEO / Director)",
+    description: "Super Admin / Management — Executive Leadership & Top-Level Access",
+  },
+  {
+    id: "Supervisor",
+    label: "Tier 2 (Supervisor)",
+    label: "Tier 2",
+    tier: "Tier 2",
+    badge: "Operations",
+    description: "Department Management & Operations",
+    description: "Manager / Supervisor — Department Management & Operations",
+  },
+  {
+    id: "Project Engineer",
+    label: "Tier 3 (Project Manager / Project Engineer)",
+    label: "Tier 3",
+    tier: "Tier 3",
+    badge: "Technical",
+    description: "Project Management, Planning & Engineering Operations",
+    description: "Project Manager / Team Lead — Projects, Contracts, Customers & Integrations",
+  },
+  {
+    id: "Employee",
+    label: "Tier 4 (Employee)",
+    label: "Tier 4",
+    tier: "Tier 4",
+    badge: "Workspace",
+    description: "Standard Staff & General Workspace",
+    description: "Employee — Standard Workspace & Personal Integrations",
+  },
+  {
+    id: "Intern",
+    label: "Tier 5",
+    tier: "Tier 5",
+    description: "Intern / Trainee — Guided Read-Only Workspace & Reports",
+  },
+  {
+    id: "Admin",
+    label: "Admin Portal",
+    tier: "Admin",
+    badge: "Platform",
+    description: "System Developer & Platform Management Console",
+  },
+];
+
+type Props = {
+  onLogin: (username: string, password: string, role: LocalAccountRole | string) => Promise<void> | void;
+  loading: boolean;
+  error: string;
+  onNavigateToForgot?: () => void;
+  onNavigateToRegister?: () => void;
+};
+
+export function RoleLoginForm({ onLogin, loading, error, onNavigateToForgot, onNavigateToRegister }: Props) {
+  const [role, setRole] = useState<LocalAccountRole>("Superior");
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [validationError, setValidationError] = useState("");
+
+  const selectedRoleObj = ROLES.find((r) => r.id === role);
+
+  useEffect(() => {
+    if (!isDropdownOpen) return;
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsDropdownOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isDropdownOpen]);
+
+  const handleSelectRole = (newRole: LocalAccountRole) => {
+    setRole(newRole);
+    setValidationError("");
+  };
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setValidationError("");
+    if (!username.trim() || !password) {
+      setValidationError("Enter your Email ID / User ID and password.");
+      return;
+    }
+    const cleanUser = username.trim();
+    // If Admin role is selected or admin credentials entered, effective role is Admin / Superior
+    let effectiveRole: string = role;
+    if (
+      role === "Admin" ||
+      cleanUser.toLowerCase() === "admin" ||
+      cleanUser.toLowerCase() === "admin@company" ||
+      cleanUser.toLowerCase() === "admin@company.com"
+    ) {
+      effectiveRole = "Admin";
+    }
+    await onLogin(cleanUser, password, effectiveRole);
+  };
+
+  return (
+    <form className="role-login-form" onSubmit={(event) => void submit(event)} noValidate>
+      <h1>Sign in to Nanvi</h1>
+      <p className="role-login-subtitle">Enter your corporate credentials to access your workspace.</p>
+
+      {(validationError || error) && (
+        <p className="role-login-error" role="alert">
+          {validationError || error}
+        </p>
+      )}
+
+      <label className="role-login-field">
+        <span>Email ID or User ID</span>
+        <input
+          type="text"
+          autoComplete="username"
+          placeholder={role === "Admin" ? "Enter admin username or email" : "e.g. user@company.com or username"}
+          value={username}
+          onChange={(event) => setUsername(event.target.value)}
+          disabled={loading}
+          required
+        />
+      </label>
+
+      <label className="role-login-field">
+        <span>Password</span>
+        <span className="role-login-password-wrap">
+          <input
+            type={showPassword ? "text" : "password"}
+            autoComplete="current-password"
+            placeholder="Enter your password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            disabled={loading}
+            required
+          />
+          <button
+            className="role-login-password-toggle"
+            type="button"
+            aria-label={showPassword ? "Hide password" : "Show password"}
+            aria-pressed={showPassword}
+            onClick={() => setShowPassword((visible) => !visible)}
+          >
+            {showPassword ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
+          </button>
+        </span>
+      </label>
+
+      {onNavigateToForgot && (
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "-8px", marginBottom: "4px" }}>
+          <button
+            id="forgot-password-link"
+            type="button"
+            onClick={onNavigateToForgot}
+            style={{
+              background: "none",
+              border: "none",
+              padding: 0,
+              fontSize: "13px",
+              fontWeight: 500,
+              color: "#4f46e5",
+              cursor: "pointer",
+              textDecoration: "underline",
+            }}
+          >
+            Forgot Password?
+          </button>
+        </div>
+      )}
+
+      {/* Role Selection Dropdown Field */}
+      <div className="role-login-field" ref={dropdownRef} style={{ position: "relative" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+          <span id="role-select-label" style={{ fontSize: "14px", fontWeight: 500, color: "#374151" }}>
+            Account Role
+          </span>
+          <span style={{ fontSize: "12px", color: "#64748b" }}>
+            {isDropdownOpen ? "Select a role below" : "Click to switch role"}
+          </span>
+        </div>
+
+        {/* Dropdown Toggle Button */}
+        <button
+          id="role-dropdown-btn"
+          type="button"
+          aria-haspopup="listbox"
+          aria-expanded={isDropdownOpen}
+          aria-controls="role-dropdown-panel"
+          className={`role-dropdown-trigger ${isDropdownOpen ? "open" : ""}`}
+          onClick={() => setIsDropdownOpen((prev) => !prev)}
+          disabled={loading}
+          style={{
+            width: "100%",
+            minHeight: "46px",
+            padding: "9px 14px",
+            borderRadius: "8px",
+            border: isDropdownOpen ? "1.5px solid #006583" : "1.5px solid #cbd2dc",
+            background: "#ffffff",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            cursor: "pointer",
+            transition: "all 140ms ease-in-out",
+            boxShadow: isDropdownOpen ? "0 0 0 3px rgba(0, 101, 131, 0.12)" : "0 1px 2px rgba(0,0,0,0.04)",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "#1e293b", fontWeight: 500, fontSize: "14px" }}>
+            {role === "Admin" && <ShieldCheck size={18} style={{ color: "#4338ca" }} />}
+            {role === "Superior" && <Crown size={16} style={{ color: "#16a34a" }} />}
+            <span>{selectedRoleObj?.label || role}</span>
+            {selectedRoleObj?.badge && (
+              <span
+                style={{
+                  fontSize: "10px",
+                  padding: "2px 7px",
+                  borderRadius: "9999px",
+                  background: role === "Admin" ? "#ede9fe" : role === "Superior" ? "#dcfce7" : "#f1f5f9",
+                  color: role === "Admin" ? "#4338ca" : role === "Superior" ? "#166534" : "#475569",
+                  fontWeight: 700,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.04em",
+                }}
+              >
+                {selectedRoleObj.badge}
+              </span>
+            )}
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#64748b" }}>
+            <span style={{ fontSize: "12px", color: "#64748b" }}>{isDropdownOpen ? "Close" : "Change"}</span>
+            <ChevronDown
+              size={18}
+              style={{
+                transform: isDropdownOpen ? "rotate(180deg)" : "rotate(0deg)",
+                transition: "transform 180ms ease-in-out",
+              }}
+            />
+          </div>
+        </button>
+
+        {/* Roles List - Displayed ONLY when dropdown button is clicked */}
+        {isDropdownOpen && (
+          <div
+            id="role-dropdown-panel"
+            className="role-dropdown-menu"
+            style={{
+              marginTop: "8px",
+              background: "#ffffff",
+              border: "1px solid #e2e8f0",
+              borderRadius: "8px",
+              padding: "10px",
+              boxShadow: "0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.05)",
+              display: "flex",
+              flexDirection: "column",
+              gap: "8px",
+              animation: "role-dropdown-slide 150ms ease-out",
+            }}
+          >
+            <div className="role-login-role-group" role="group" aria-labelledby="role-select-label">
+              {ROLES.map((item) => {
+                const isSelected = role === item.id;
+                const isSpecialAdmin = item.id === "Admin";
+                const isSpecialSuperior = item.id === "Superior";
+                const btnClass = `role-login-role-btn ${
+                  isSpecialAdmin ? "role-admin" : isSpecialSuperior ? "role-superior" : ""
+                } ${isSelected ? "active" : ""}`;
+
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={btnClass}
+                    aria-pressed={isSelected}
+                    onClick={() => {
+                      handleSelectRole(item.id);
+                      setIsDropdownOpen(false);
+                    }}
+                    disabled={loading}
+                  >
+                    {isSpecialAdmin && <ShieldCheck size={18} />}
+                    {isSpecialSuperior && <Crown size={16} />}
+                    <span>{item.label}</span>
+                    {item.badge && (
+                      <span
+                        style={{
+                          fontSize: "10px",
+                          padding: "1px 6px",
+                          borderRadius: "9999px",
+                          background: isSelected ? "rgba(255,255,255,0.25)" : "rgba(0,0,0,0.08)",
+                          fontWeight: 700,
+                          textTransform: "uppercase",
+                          letterSpacing: "0.04em",
+                          marginLeft: "4px",
+                        }}
+                      >
+                        {item.badge}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Selected Role Context Notice */}
+        <div
+          style={{
+            fontSize: "12.5px",
+            color: role === "Admin" ? "#4338ca" : role === "Superior" ? "#166534" : "#334155",
+            background: role === "Admin" ? "#f5f3ff" : role === "Superior" ? "#f0fdf4" : "#f8fafc",
+            border: `1px solid ${
+              role === "Admin" ? "#c7d2fe" : role === "Superior" ? "#bbf7d0" : "#e2e8f0"
+            }`,
+            borderRadius: "8px",
+            padding: "8px 12px",
+            marginTop: "6px",
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+          }}
+        >
+          {role === "Admin" ? (
+            <>
+              <ShieldCheck size={16} style={{ flexShrink: 0, color: "#6366f1" }} />
+              <span>
+                <strong>Admin Portal:</strong> System administration & platform management console.
+              </span>
+            </>
+          ) : role === "Superior" ? (
+            <>
+              <Crown size={16} style={{ flexShrink: 0, color: "#16a34a" }} />
+              <span>
+                <strong>Tier 1 (Superior):</strong> Executive leadership (CEO, Directors, Executives).
+                <strong>Tier 1 — Super Admin / Management:</strong> Executive leadership & full workspace governance.
+              </span>
+            </>
+          ) : role === "Supervisor" ? (
+            <span>
+              <strong>Tier 2 (Supervisor):</strong> Department operations & team oversight.
+              <strong>Tier 2 — Manager / Supervisor:</strong> Department operations, team oversight & workspace integrations.
+            </span>
+          ) : role === "Project Engineer" ? (
+            <span>
+              <strong>Tier 3 (Project Manager):</strong> Project management & engineering workflows.
+              <strong>Tier 3 — Project Manager / Team Lead:</strong> Projects, contracts, customers, personal integrations & local folders.
+            </span>
+          ) : role === "Employee" ? (
+            <span>
+              <strong>Tier 4 — Employee:</strong> Enterprise workspace, email, data, personal integrations & local folders.
+            </span>
+          ) : (
+            <span>
+              <strong>Tier 4 (Employee):</strong> Enterprise staff access & general workspace.
+              <strong>Tier 5 — Intern / Trainee:</strong> Guided access to general & project files and reports.
+            </span>
+          )}
+        </div>
+      </div>
+
+      <button className="role-login-submit" type="submit" disabled={loading}>
+        {loading ? (
+          <>
+            <LoaderCircle size={18} className="role-login-spinner" aria-hidden="true" />
+            <span>Signing in…</span>
+          </>
+        ) : (
+          <span>{role === "Admin" ? "Sign in to Admin Console" : "Sign in"}</span>
+        )}
+      </button>
+    </form>
+  );
+}

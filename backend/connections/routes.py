@@ -1,0 +1,322 @@
+"""FastAPI routes for Universal Connections Hub."""
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+
+from backend.connections.authz import can_view_audit
+from backend.connections.base import (
+    AmbiguousConnection,
+    ConnectionError as HubConnectionError,
+    InvalidCredentials,
+    OAuthDenied,
+    OAuthExpired,
+    ProviderUnavailable,
+    SSRFBlocked,
+    TlsError,
+    Unreachable,
+)
+from backend.connections.manager import ConnectionManager, get_connection_manager
+from backend.connections.registry import ProviderRegistry, get_provider_registry
+from backend.connections.schemas import (
+    ConnectionListResponse,
+    ConnectionPublic,
+    CreateConnectionRequest,
+    ProviderListResponse,
+    ProviderPublic,
+    ServiceState,
+    SyncConnectionResponse,
+    TestConnectionResponse,
+    UpdateConnectionRequest,
+    UpdateServiceRequest,
+    UpdateSyncConfigRequest,
+    ValidateConnectionRequest,
+)
+from backend.security.dependencies import get_current_user
+from backend.security.models import UserIdentity
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/connections", tags=["connections"])
+
+
+def _handle_error(exc: Exception) -> HTTPException:
+    msg = getattr(exc, "friendly_message", str(exc))
+    if isinstance(exc, (InvalidCredentials, OAuthDenied)):
+        return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=msg)
+    if isinstance(exc, (ProviderUnavailable, HubConnectionError)) and "not found" in str(exc).lower():
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=msg)
+    if isinstance(exc, (SSRFBlocked, OAuthExpired, AmbiguousConnection)):
+        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
+    if isinstance(exc, (Unreachable, TlsError)):
+        return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=msg)
+    return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
+
+
+# ── Provider Catalog ──────────────────────────────────────────
+
+@router.get("/providers", response_model=ProviderListResponse)
+def list_providers(
+    registry: ProviderRegistry = Depends(get_provider_registry),
+) -> ProviderListResponse:
+    """Return the provider catalog with dynamic forms and availability status."""
+    return ProviderListResponse(providers=registry.list_all())
+
+
+@router.get("/categories", response_model=list[str])
+def list_categories(
+    registry: ProviderRegistry = Depends(get_provider_registry),
+) -> list[str]:
+    """Return unique categories across all providers."""
+    return registry.get_categories()
+
+
+# ── Connection Management ─────────────────────────────────────
+
+@router.get("", response_model=ConnectionListResponse)
+def list_connections(
+    provider: str | None = Query(default=None),
+    scope: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    q: str | None = Query(default=None),
+    user: UserIdentity = Depends(get_current_user),
+    manager: ConnectionManager = Depends(get_connection_manager),
+) -> ConnectionListResponse:
+    """List connections accessible to the current user."""
+    conns = manager.list_connections(
+        user,
+        provider=provider,
+        scope=scope,
+        status=status,
+        query=q,
+    )
+    return ConnectionListResponse(connections=conns, total=len(conns))
+
+
+@router.get("/{connection_id}", response_model=ConnectionPublic)
+def get_connection(
+    connection_id: str,
+    user: UserIdentity = Depends(get_current_user),
+    manager: ConnectionManager = Depends(get_connection_manager),
+) -> ConnectionPublic:
+    """Get connection details (without sensitive credentials)."""
+    try:
+        return manager.get_connection(connection_id, user)
+    except Exception as exc:
+        raise _handle_error(exc)
+
+
+@router.post("", response_model=ConnectionPublic, status_code=status.HTTP_201_CREATED)
+def create_connection(
+    req: CreateConnectionRequest,
+    user: UserIdentity = Depends(get_current_user),
+    manager: ConnectionManager = Depends(get_connection_manager),
+) -> ConnectionPublic:
+    """Create a connection using credentials or form settings."""
+    try:
+        return manager.create_connection(user, req)
+    except Exception as exc:
+        raise _handle_error(exc)
+
+
+@router.post("/validate", response_model=TestConnectionResponse)
+def validate_connection(
+    req: ValidateConnectionRequest,
+    manager: ConnectionManager = Depends(get_connection_manager),
+) -> TestConnectionResponse:
+    """Test connection credentials before saving."""
+    return manager.validate_credentials(req)
+
+
+@router.post("/{connection_id}/test", response_model=TestConnectionResponse)
+def test_existing_connection(
+    connection_id: str,
+    user: UserIdentity = Depends(get_current_user),
+    manager: ConnectionManager = Depends(get_connection_manager),
+) -> TestConnectionResponse:
+    """Test an existing saved connection."""
+    try:
+        return manager.test_connection(connection_id, user)
+    except Exception as exc:
+        raise _handle_error(exc)
+
+
+@router.patch("/{connection_id}", response_model=ConnectionPublic)
+def update_connection(
+    connection_id: str,
+    req: UpdateConnectionRequest,
+    user: UserIdentity = Depends(get_current_user),
+    manager: ConnectionManager = Depends(get_connection_manager),
+) -> ConnectionPublic:
+    """Update connection name or non-secret configuration."""
+    try:
+        return manager.update_connection(connection_id, user, req)
+    except Exception as exc:
+        raise _handle_error(exc)
+
+
+@router.delete("/{connection_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_connection(
+    connection_id: str,
+    user: UserIdentity = Depends(get_current_user),
+    manager: ConnectionManager = Depends(get_connection_manager),
+) -> None:
+    """Disconnect and soft-delete a connection."""
+    try:
+        manager.delete_connection(connection_id, user)
+    except Exception as exc:
+        raise _handle_error(exc)
+
+
+@router.get("/{connection_id}/services", response_model=list[ServiceState])
+def get_connection_services(
+    connection_id: str,
+    user: UserIdentity = Depends(get_current_user),
+    manager: ConnectionManager = Depends(get_connection_manager),
+) -> list[ServiceState]:
+    """Get all individual services and permissions for a connected account."""
+    try:
+        conn = manager.get_connection(connection_id, user)
+        return conn.services
+    except Exception as exc:
+        raise _handle_error(exc)
+
+
+@router.patch("/{connection_id}/services/{service_id}", response_model=ConnectionPublic)
+def update_connection_service(
+    connection_id: str,
+    service_id: str,
+    req: UpdateServiceRequest,
+    user: UserIdentity = Depends(get_current_user),
+    manager: ConnectionManager = Depends(get_connection_manager),
+) -> ConnectionPublic:
+    """Enable/disable an individual service or update granular permissions."""
+    try:
+        return manager.update_service(connection_id, service_id, user, req)
+    except Exception as exc:
+        raise _handle_error(exc)
+
+
+@router.patch("/{connection_id}/sync-config", response_model=ConnectionPublic)
+def update_sync_configuration(
+    connection_id: str,
+    req: UpdateSyncConfigRequest,
+    user: UserIdentity = Depends(get_current_user),
+    manager: ConnectionManager = Depends(get_connection_manager),
+) -> ConnectionPublic:
+    """Update synchronization schedule and automated sync frequency."""
+    try:
+        return manager.update_sync_config(connection_id, user, req)
+    except Exception as exc:
+        raise _handle_error(exc)
+
+
+@router.post("/{connection_id}/sync", response_model=SyncConnectionResponse)
+def trigger_connection_sync(
+    connection_id: str,
+    user: UserIdentity = Depends(get_current_user),
+    manager: ConnectionManager = Depends(get_connection_manager),
+) -> SyncConnectionResponse:
+    """Trigger an on-demand synchronization for all active services."""
+    try:
+        return manager.sync_connection(connection_id, user)
+    except Exception as exc:
+        raise _handle_error(exc)
+
+
+@router.post("/{connection_id}/revoke", response_model=ConnectionPublic)
+def revoke_connection(
+    connection_id: str,
+    user: UserIdentity = Depends(get_current_user),
+    manager: ConnectionManager = Depends(get_connection_manager),
+) -> ConnectionPublic:
+    """Revoke authorization at provider and mark disconnected safely."""
+    try:
+        return manager.revoke_connection(connection_id, user)
+    except Exception as exc:
+        raise _handle_error(exc)
+
+
+@router.get("/{connection_id}/audit")
+def get_connection_audit(
+    connection_id: str,
+    user: UserIdentity = Depends(get_current_user),
+    manager: ConnectionManager = Depends(get_connection_manager),
+) -> list[dict[str, Any]]:
+    """List recent audit events specific to this connection."""
+    try:
+        return manager.list_connection_audit(connection_id, user)
+    except Exception as exc:
+        raise _handle_error(exc)
+
+
+@router.get("/audit/events")
+def list_audit_events(
+    user: UserIdentity = Depends(get_current_user),
+    manager: ConnectionManager = Depends(get_connection_manager),
+) -> list[dict[str, Any]]:
+    """List recent connection audit events (Admins and authorized users)."""
+    if not can_view_audit(user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Permission denied: audit access requires administrator privileges.",
+        )
+
+    tenant_id = user.tenant_id or "enterprise-tenant"
+    pg_sql = """
+        SELECT id, tenant_id, actor_user_id, connection_id, provider, event, safe_metadata, ip, created_at
+        FROM public.connection_audit_events
+        WHERE tenant_id = %s
+        ORDER BY created_at DESC LIMIT 100;
+    """
+    sqlite_sql = """
+        SELECT id, tenant_id, actor_user_id, connection_id, provider, event, safe_metadata, ip, created_at
+        FROM connection_audit_events
+        WHERE tenant_id = ?
+        ORDER BY created_at DESC LIMIT 100;
+    """
+    rows = manager._query(pg_sql, sqlite_sql, (tenant_id,))
+
+    # Enrich events with resolved user identity / username
+    acc_map: dict[str, dict[str, Any]] = {}
+    try:
+        from backend.security.local_accounts import get_local_account_store
+        all_accounts = get_local_account_store().list_accounts(tenant_id)
+        for a in all_accounts:
+            if a.get("id"):
+                acc_map[str(a["id"])] = a
+            if a.get("username"):
+                acc_map[str(a["username"]).lower()] = a
+            if a.get("email"):
+                acc_map[str(a["email"]).lower()] = a
+    except Exception:
+        pass
+
+    resolved: list[dict[str, Any]] = []
+    for r in rows:
+        r_dict = dict(r) if hasattr(r, "keys") else dict(r)
+        raw_actor = str(r_dict.get("actor_user_id") or "").strip()
+        matched = acc_map.get(raw_actor) or acc_map.get(raw_actor.lower())
+
+        if not matched and user and user.subject and (user.subject == raw_actor or user.subject.lower() == raw_actor.lower()):
+            u_role = next(iter(user.roles)).value if user.roles else "Superior"
+            matched = {
+                "username": getattr(user, "preferred_username", None) or (user.email.split("@")[0] if user.email else user.name or "user"),
+                "display_name": user.name or (user.email.split("@")[0] if user.email else "User"),
+                "role": u_role,
+            }
+
+        resolved_username = matched["username"] if matched else raw_actor
+        resolved_name = (matched.get("display_name") if matched else None) or resolved_username
+        resolved_role = (matched.get("role") if matched else None) or "Employee"
+
+        r_dict["raw_actor_id"] = raw_actor
+        r_dict["actor_user_id"] = resolved_username or "System"
+        r_dict["actor_username"] = resolved_username or "System"
+        r_dict["actor_name"] = resolved_name or "System"
+        r_dict["actor_role"] = resolved_role
+        resolved.append(r_dict)
+
+    return resolved
