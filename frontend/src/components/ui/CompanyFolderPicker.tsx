@@ -1639,6 +1639,7 @@ export function CompanyFolderPicker({ api }: Props) {
         candidates={droppedCandidates}
         onCandidatesChange={setDroppedCandidates}
         onConfirmConnect={handleConfirmDroppedConnect}
+        allowPopoutWindow={!isDesktop}
         connecting={confirmingDropConnect}
         previewFolderName={previewTarget.name}
         previewFolderPath={previewTarget.path}

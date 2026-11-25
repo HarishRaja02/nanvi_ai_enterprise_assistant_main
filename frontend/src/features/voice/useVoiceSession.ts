@@ -19,6 +19,7 @@ import {
   VoiceTurn,
 } from "./voiceTypes";
 import { resolveSelfRepair, TURN_TIMEOUTS } from "./turnDetector";
+import { refineChatQuery } from "../../lib/queryRefiner";
 import { phrasePool } from "./phrasePool";
 import { earconService } from "./earconService";
 import { RealtimeVoiceEvent, RealtimeVoiceTransport } from "./realtimeVoiceTransport";
@@ -544,8 +545,9 @@ export function useVoiceSession({
       cancelFollowUpWindow();
       // 1. Resolve conversational self-repair (e.g. "Show August... no, I meant September")
       const repaired = resolveSelfRepair(queryText.trim());
-      // 2. Sanitize user input before giving to the AI: remove stray symbols, asterisks, brackets
-      const clean = sanitizeUserQueryForAI(repaired);
+      // 2. Sanitize and precision-refine transcription before giving to the AI
+      const sanitized = sanitizeUserQueryForAI(repaired);
+      const clean = refineChatQuery(sanitized, { mode: "voice" }).refinedQuery;
       if (!clean || !identity) return;
 
       // 3. Check if query should be intercepted (e.g., verbal confirmation of high-risk actions)

@@ -1,6 +1,6 @@
-import React, { useEffect } from "react";
+import { useEffect } from "react";
 import { LegalLayout } from "./LegalLayout";
-import { Shield, Lock, FileSearch, Sparkles, Database, Mail, UserCheck, AlertTriangle } from "lucide-react";
+import { Shield, Lock, FileSearch } from "lucide-react";
 
 interface PrivacyPolicyPageProps {
   onNavigateToTerms: () => void;
@@ -18,6 +18,9 @@ const TOC = [
   { id: "security-retention", label: "8. Data Security, Retention & Deletion" },
   { id: "user-rights", label: "9. Your Rights & Choices" },
   { id: "contact-us", label: "10. Contact Information" },
+  { id: "age-restriction", label: "11. Age Restriction & Enterprise Use" },
+  { id: "security-incidents", label: "12. Security Incidents & Breach Notification" },
+  { id: "policy-changes", label: "13. Changes to This Privacy Policy" },
 ];
 
 export function PrivacyPolicyPage({ onNavigateToTerms, onBack }: PrivacyPolicyPageProps) {
@@ -38,7 +41,7 @@ export function PrivacyPolicyPage({ onNavigateToTerms, onBack }: PrivacyPolicyPa
       title="Privacy Policy"
       description="How Nanvi AI Enterprise Assistant accesses, processes, protects, and handles your enterprise documents, emails, and account data with Zero-Trust principles."
       badge="Enterprise Data Privacy & Security"
-      lastUpdated="November 17, 2026"
+      lastUpdated="November 25, 2026"
       tableOfContents={TOC}
       onNavigateToPrivacy={() => { }}
       onNavigateToTerms={onNavigateToTerms}
@@ -394,6 +397,62 @@ export function PrivacyPolicyPage({ onNavigateToTerms, onBack }: PrivacyPolicyPa
           </a>
           .
         </p>
+      </section>
+
+      {/* ── 11. Age Restriction & Enterprise Use ──────────────── */}
+      <section id="age-restriction" className="legal-section">
+        <h2 className="legal-section-title">
+          <span className="legal-section-number">11</span>
+          <span>Age Restriction &amp; Enterprise Use</span>
+        </h2>
+        <p>
+          The Service is intended solely for enterprise environments, professional organizations, and authorized corporate
+          users. Nanvi AI Enterprise Assistant is not directed at, and does not knowingly collect personal information
+          from, individuals under the age of 16 (or under the age of 18 where required by applicable law).
+        </p>
+        <p>
+          If we become aware that we have collected personal information from a user under the applicable age limit
+          without proper authorization, we will take steps to delete that information promptly. By using the Service, you
+          represent that you are at least the required age and that you are authorized by your organization to access
+          the Service.
+        </p>
+      </section>
+
+      {/* ── 12. Security Incidents & Breach Notification ──────── */}
+      <section id="security-incidents" className="legal-section">
+        <h2 className="legal-section-title">
+          <span className="legal-section-number">12</span>
+          <span>Security Incidents &amp; Breach Notification</span>
+        </h2>
+        <p>
+          We maintain technical and organizational measures designed to protect your information. In the event of a
+          confirmed security incident that affects your personal or organizational data, we will notify affected customers
+          and, where required by applicable law, relevant supervisory authorities, without undue delay and in accordance
+          with the timelines prescribed by those laws.
+        </p>
+        <p>
+          Notifications will include, to the extent known and permitted, a description of the nature of the incident,
+          the categories of data involved, and the measures we are taking to address the incident.
+        </p>
+      </section>
+
+      {/* ── 13. Changes to This Privacy Policy ────────────────── */}
+      <section id="policy-changes" className="legal-section">
+        <h2 className="legal-section-title">
+          <span className="legal-section-number">13</span>
+          <span>Changes to This Privacy Policy</span>
+        </h2>
+        <p>
+          We may update this Privacy Policy from time to time to reflect changes in our practices, legal requirements, or
+          the Service.
+        </p>
+        <p>
+          The &ldquo;Last Updated&rdquo; date at the top of this policy indicates when the most recent changes were made.
+          Material changes will be communicated to enterprise customers via email to the account administrator, an in-app
+          notice, or both. Your continued use of the Service after the effective date of an updated policy constitutes
+          your acknowledgment of the changes.
+        </p>
+        <p>We encourage you to review this Privacy Policy periodically.</p>
       </section>
     </LegalLayout>
   );

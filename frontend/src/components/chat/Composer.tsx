@@ -9,6 +9,8 @@ import {
   isWhisperHallucination,
   openSystemMicrophoneSettings,
 } from "../../lib/voiceInputGuard";
+import { getDesktopLocalStatus } from "../../lib/browserFolderSync";
+import { refineChatQuery } from "../../lib/queryRefiner";
 
 const MAX_LENGTH = 4000;
 const WARN_AT = 3600;
@@ -51,6 +53,7 @@ export function Composer({
     message: string;
     canOpenSettings: boolean;
   } | null>(null);
+  const [refinementNote, setRefinementNote] = useState<string | null>(null);
 
   const ref = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -244,19 +247,16 @@ export function Composer({
     }
   };
 
-  // Fast client-side phonetic & enterprise entity normalizer (0ms latency)
-  const applyFastCorrections = (text: string): string => {
-    let s = text.trim();
-    s = s.replace(/\b(?:sri|shri)?\s*ganesh?\s*(?:ready\s*mix|redymix|radymix)?\b/gi, "Sri Ganesh ReadyMix");
-    s = s.replace(/\b(?:in\s*voice|in\s*voices)\b/gi, "invoice");
-    s = s.replace(/\b(?:ageing|aging)\s*(?:brakdown|break\s*down)\b/gi, "aging breakdown");
-    s = s.replace(/\b(?:contrct|contraxt|contarct)\b/gi, "contract");
-    s = s.replace(/\b(?:agreemnt|aggrement)\b/gi, "agreement");
-    s = s.replace(/\b(?:warenty|warrenty)\b/gi, "warranty");
-    s = s.replace(/\b(?:liabilty|liabelity)\b/gi, "liability");
-    s = s.replace(/\b(?:procument|procuremnt)\b/gi, "procurement");
-    s = s.replace(/\bfind\s+(?:the\s+)?invoices?\b/gi, "find invoice");
-    return s;
+  // Fast client-side precision query refiner (0ms latency, context-checked)
+  const runPrecisionRefine = (text: string, mode: "chat" | "voice") => {
+    const status = getDesktopLocalStatus();
+    const knownTerms: string[] = [];
+    if (status?.connected_folders) {
+      for (const folder of status.connected_folders) {
+        if (folder.folder_path) knownTerms.push(folder.folder_path);
+      }
+    }
+    return refineChatQuery(text, { mode, knownTerms });
   };
 
   const handleFinishSpeaking = async (rawSpokenText: string) => {
@@ -273,8 +273,9 @@ export function Composer({
       return;
     }
 
-    // 2. Instant client-side correction (0ms)
-    const fastCorrected = applyFastCorrections(spoken);
+    // 2. Instant precision client-side refinement (0ms)
+    const fastRefined = runPrecisionRefine(spoken, "voice");
+    const fastCorrected = fastRefined.refinedQuery || spoken;
     setValue(fastCorrected);
     setIsRefining(true);
 
@@ -284,7 +285,7 @@ export function Composer({
       // If backend refine API is available, race it with a fast 350ms budget so it never lags
       if (api?.refineSpokenQuery) {
         try {
-          const refinePromise = api.refineSpokenQuery(spoken);
+          const refinePromise = api.refineSpokenQuery(fastCorrected, undefined, "voice");
           const timeoutPromise = new Promise<{ status: "timeout" }>((resolve) =>
             setTimeout(() => resolve({ status: "timeout" }), 350)
           );
@@ -304,6 +305,11 @@ export function Composer({
         } catch {
           // Keep fastCorrected if API is slow or offline
         }
+      }
+
+      if (fastRefined.isCorrected && fastRefined.changesSummary) {
+        setRefinementNote(`Refined: ${fastRefined.changesSummary}`);
+        setTimeout(() => setRefinementNote(null), 4000);
       }
 
       setIsRefining(false);
@@ -547,7 +553,13 @@ export function Composer({
     event?.preventDefault();
     const text = value.trim();
     if (!text || busy) return;
-    if (await onSend(text, ragEnabled, attachedFile?.name)) {
+    const refined = runPrecisionRefine(text, "chat");
+    const queryToSend = refined.refinedQuery || text;
+    if (refined.isCorrected && refined.changesSummary) {
+      setRefinementNote(`Refined: ${refined.changesSummary}`);
+      setTimeout(() => setRefinementNote(null), 4000);
+    }
+    if (await onSend(queryToSend, ragEnabled, attachedFile?.name)) {
       setValue("");
       setAttachedFile(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -635,7 +647,7 @@ export function Composer({
 
   const nearLimit = value.length >= WARN_AT;
   const hasText = value.trim().length > 0;
-  const hasStatusTray = Boolean(attachedFile || uploading || uploadError || clarification || micNotice);
+  const hasStatusTray = Boolean(attachedFile || uploading || uploadError || clarification || micNotice || refinementNote);
 
   return (
     <form
@@ -688,6 +700,13 @@ export function Composer({
           {uploadError && (
             <div className="composer-error-pill" role="alert">
               {uploadError}
+            </div>
+          )}
+
+          {refinementNote && (
+            <div className="composer-refinement-pill" role="status">
+              <Sparkles size={12} aria-hidden="true" />
+              <span>{refinementNote}</span>
             </div>
           )}
 

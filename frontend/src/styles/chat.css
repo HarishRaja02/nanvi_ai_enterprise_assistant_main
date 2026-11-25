@@ -2923,6 +2923,21 @@ summary::marker {
   color: #dc2626;
 }
 
+.composer-refinement-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  padding: 3px 10px;
+  border-radius: 9999px;
+  background: var(--primary-50);
+  border: 1px solid var(--primary-100);
+  color: var(--primary-700);
+  font-size: 11.5px;
+  font-weight: 500;
+  animation: slide-up-reveal 0.18s ease-out;
+}
+
 .composer-mic-notice {
   display: flex;
   flex-direction: column;

@@ -36,6 +36,12 @@ class ChatBody(BaseModel):
     active_document_id: str | None = Field(default=None)
     context_override: dict[str, Any] | None = Field(default=None)
 
+
+class ChatRefineBody(BaseModel):
+    query: str = Field(default="", max_length=4000)
+    conversation_id: str | None = Field(default=None, max_length=128)
+    known_terms: list[str] | None = Field(default=None)
+
 class UploadDocumentBody(BaseModel):
     filename: str = Field(min_length=1, max_length=255)
     content_base64: str = Field(min_length=1)
@@ -88,6 +94,26 @@ def _extract_local_context(context_override: dict[str, Any] | None) -> dict[str,
         return None
     lc = context_override.get("local_context")
     return lc if isinstance(lc, dict) else None
+
+
+@router.post("/refine")
+def refine_chat_query_endpoint(
+    body: ChatRefineBody,
+    user: UserAttributes = Depends(current_attributes),
+):
+    """Precision refine layer for typed chat queries (auto-corrects confident typos/mishearings only)."""
+    from backend.chat.query_refiner import refine_query
+
+    res = refine_query(body.query, mode="chat", known_terms=body.known_terms)
+    return {
+        "original_query": res.original_query,
+        "refined_query": res.refined_query,
+        "is_corrected": res.is_corrected,
+        "changes": [
+            {"original": c.original, "corrected": c.corrected, "reason": c.reason}
+            for c in res.changes
+        ],
+    }
 
 
 @router.post("")

@@ -1529,4 +1529,127 @@ describe("browserFolderSync", () => {
     await clearSavedBrowserDirectoryHandle("certificate");
     setActiveFolderStorageScope(null);
   });
+
+  it("supports compact right-side popout drop window on Vercel web and hides it in desktop mode", async () => {
+    delete (window as unknown as { showDirectoryPicker?: unknown }).showDirectoryPicker;
+    delete (window as unknown as { electronAPI?: unknown }).electronAPI;
+
+    const mockApi = {
+      getLocalAgentToken: vi.fn().mockResolvedValue({ token: "pair-popout" }),
+      getLocalAgentStatus: vi.fn().mockResolvedValue({
+        is_online: false,
+        connected_folders: [],
+        total_files: 0,
+        total_chunks: 0,
+      }),
+      syncLocalFolderWithPairingToken: vi.fn().mockResolvedValue({ status: "ok", folder_id: "browser://popdocs", chunks_synced: 1, files_synced: 1 }),
+      sendLocalAgentHeartbeatWithPairingToken: vi.fn().mockResolvedValue({ status: "ok" }),
+    };
+
+    const popupDoc = document.implementation.createHTMLDocument("Nanvi Drop");
+    Object.defineProperty(popupDoc, "defaultView", { configurable: true, value: window });
+    const popupClosed = { value: false };
+    const fakePopup = {
+      document: popupDoc,
+      get closed() {
+        return popupClosed.value;
+      },
+      focus: vi.fn(),
+      close: vi.fn(() => {
+        popupClosed.value = true;
+      }),
+      addEventListener: vi.fn(),
+    } as unknown as Window;
+
+    const origOpen = window.open;
+    const openSpy = vi.fn().mockReturnValue(fakePopup);
+    Object.defineProperty(window, "open", { configurable: true, value: openSpy });
+
+    try {
+      setActiveFolderStorageScope("popout-web-scope");
+      const user = userEvent.setup();
+      const { unmount } = render(createElement(CompanyFolderPicker, { api: mockApi as any }));
+
+      await user.click(await screen.findByRole("button", { name: /^Connect Local Folder$/i }));
+      const popoutBtn = await screen.findByRole("button", { name: /Open Compact Drop Window \(Right\)/i });
+      await user.click(popoutBtn);
+
+      expect(openSpy).toHaveBeenCalledTimes(1);
+      const [, winName, features] = openSpy.mock.calls[0];
+      expect(winName).toBe("nanvi-folder-drop");
+      expect(String(features)).toContain("popup=yes");
+
+      await waitFor(() => {
+        expect(popupDoc.body.querySelector('[data-testid="nanvi-folder-dropzone"]')).not.toBeNull();
+      });
+
+      const popoutDropzone = popupDoc.body.querySelector('[data-testid="nanvi-folder-dropzone"]')!;
+      const rootEntry = {
+        isFile: false,
+        isDirectory: true,
+        name: "popdocs",
+        createReader: () => {
+          let done = false;
+          return {
+            readEntries: (cb: (entries: any[]) => void) => {
+              if (!done) {
+                done = true;
+                cb([
+                  {
+                    isFile: true,
+                    isDirectory: false,
+                    name: "pop_note.txt",
+                    file: (fCb: (f: File) => void) =>
+                      fCb({
+                        name: "pop_note.txt",
+                        type: "text/plain",
+                        size: 20,
+                        lastModified: 1700008000000,
+                        text: async () => "Popout drop worked.",
+                        arrayBuffer: async () => new ArrayBuffer(0),
+                      } as unknown as File),
+                  },
+                ]);
+              } else {
+                cb([]);
+              }
+            },
+          };
+        },
+      };
+
+      fireEvent.drop(popoutDropzone, {
+        dataTransfer: {
+          items: [{ kind: "file", webkitGetAsEntry: () => rootEntry }],
+          files: [],
+        },
+      });
+
+      await waitFor(() => {
+        expect(popupDoc.body.textContent).toContain('Would you like to connect "popdocs" to Nanvi?');
+      });
+
+      const connectBtn = Array.from(popupDoc.body.querySelectorAll("button")).find((b) =>
+        /^Connect Folder$/i.test(b.textContent || ""),
+      );
+      expect(connectBtn).toBeDefined();
+      await user.click(connectBtn!);
+
+      expect(await screen.findByText(/Connected 'popdocs' \(1 files\) — Ready to search/i)).toBeInTheDocument();
+      unmount();
+
+      // Desktop (.exe / .msix) must NOT expose the web popout button
+      (window as unknown as { electronAPI?: unknown }).electronAPI = {
+        isDesktop: true,
+        platform: "win32",
+      };
+      render(createElement(CompanyFolderPicker, { api: mockApi as any }));
+      expect(screen.queryByRole("button", { name: /Open Compact Drop Window/i })).not.toBeInTheDocument();
+
+      await clearSavedBrowserDirectoryHandle("popdocs");
+      setActiveFolderStorageScope(null);
+    } finally {
+      Object.defineProperty(window, "open", { configurable: true, value: origOpen });
+    }
+  });
 });

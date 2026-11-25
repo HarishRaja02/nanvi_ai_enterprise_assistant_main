@@ -12,6 +12,9 @@ from typing import Any
 
 # Domain-specific enterprise entities and terminology
 ENTERPRISE_COMPANIES = [
+    "Nanvi",
+    "Nanvi AI",
+    "Nanvi Assistant",
     "Asteron Technologies",
     "CloudNova",
     "BluePeak",
@@ -79,6 +82,9 @@ WHISPER_BIASING_PROMPT = ", ".join(ALL_ENTERPRISE_TERMS)
 
 # Phonetic corrections for common speech-to-text mishearings
 PHONETIC_CORRECTIONS: list[tuple[re.Pattern, str]] = [
+    # Assistant / Brand name (unambiguous phonetic mishearings only)
+    (re.compile(r"\b(?:nanbi|nanbhi|nanvee|nanvy|nanwi|nanvhi|nonvi|namvi|nenvi)\b", re.IGNORECASE), "Nanvi"),
+
     # Company names
     (re.compile(r"\baster\s*on(?:\s*tech(?:nologies)?)?\b", re.IGNORECASE), "Asteron Technologies"),
     (re.compile(r"\bcloud\s+nova\b", re.IGNORECASE), "CloudNova"),

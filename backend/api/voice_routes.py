@@ -28,6 +28,7 @@ from backend.chat.vocabulary_biasing import (
     apply_phonetic_corrections,
     get_vocabulary_summary,
 )
+from backend.chat.query_refiner import refine_query
 from backend.core.config import settings
 from backend.observability.logging import log_event
 from backend.observability.voice_telemetry import voice_telemetry
@@ -188,6 +189,8 @@ from backend.security.models import UserIdentity
 class RefineQueryRequest(BaseModel):
     query: str = Field(default="", max_length=4000)
     conversation_id: str | None = Field(default=None)
+    mode: str = Field(default="voice")
+    known_terms: list[str] | None = Field(default=None)
 
 
 class RefineQueryResponse(BaseModel):
@@ -204,7 +207,7 @@ def refine_voice_query(
     body: RefineQueryRequest,
     user: UserIdentity | None = Depends(get_optional_current_user),
 ) -> RefineQueryResponse:
-    """Intelligently correct spoken voice queries using domain phonetics and LLM verification."""
+    """Intelligently correct chat and voice queries using precision context-aware rules."""
     raw = (body.query or "").strip()
     if not raw:
         return RefineQueryResponse(
@@ -220,26 +223,21 @@ def refine_voice_query(
             ],
         )
 
-    # 1. Phonetic & Enterprise terminology correction
-    phonetic_query = apply_phonetic_corrections(raw)
+    # 1. Precision query refiner (protects valid entity names/filenames; resolves clear mishearings like nandi -> Nanvi in Nanvi context)
+    refinement = refine_query(raw, mode=body.mode, known_terms=body.known_terms)
+    pre_corrected = refinement.refined_query
 
-    enterprise_corrections = [
-        (re.compile(r"\b(?:sri|shri)?\s*ganesh?\s*(?:ready\s*mix|redymix|radymix)?\b", re.IGNORECASE), "Sri Ganesh ReadyMix"),
-        (re.compile(r"\b(?:in\s*voice|in\s*voices)\b", re.IGNORECASE), "invoice"),
-        (re.compile(r"\b(?:ageing|aging)\s*(?:brakdown|break\s*down)\b", re.IGNORECASE), "aging breakdown"),
-        (re.compile(r"\b(?:contrct|contraxt|contarct)\b", re.IGNORECASE), "contract"),
-        (re.compile(r"\b(?:agreemnt|aggrement)\b", re.IGNORECASE), "agreement"),
-        (re.compile(r"\b(?:warenty|warrenty)\b", re.IGNORECASE), "warranty"),
-        (re.compile(r"\b(?:liabilty|liabelity)\b", re.IGNORECASE), "liability"),
-        (re.compile(r"\b(?:procument|procuremnt)\b", re.IGNORECASE), "procurement"),
-        (re.compile(r"\bfind\s+(?:the\s+)?invoices?\b", re.IGNORECASE), "find invoice"),
-    ]
-    pre_corrected = phonetic_query
-    for pattern, replacement in enterprise_corrections:
-        pre_corrected = pattern.sub(replacement, pre_corrected)
+    # Legacy voice-specific composite shortcuts (scoped carefully so standalone names like 'Ganesh' aren't overwritten)
+    if body.mode == "voice":
+        voice_only_corrections = [
+            (re.compile(r"\b(?:(?:sri|shri)\s+ganesh?(?:\s+(?:ready\s*mix|redymix|radymix))?|ganesh?\s+(?:ready\s*mix|redymix|radymix))\b", re.IGNORECASE), "Sri Ganesh ReadyMix"),
+            (re.compile(r"\bfind\s+in\s+voice\b", re.IGNORECASE), "find invoice"),
+        ]
+        for pattern, replacement in voice_only_corrections:
+            pre_corrected = pattern.sub(replacement, pre_corrected)
 
-    # 2. Check for unintelligible / filler query
-    if is_query_incomplete_or_unclear(pre_corrected):
+    # 2. Check for unintelligible / filler query (voice utterances only)
+    if body.mode == "voice" and is_query_incomplete_or_unclear(pre_corrected):
         return RefineQueryResponse(
             status="clarify",
             original_query=raw,
@@ -253,30 +251,24 @@ def refine_voice_query(
             ],
         )
 
-    # 3. LLM-based query correction if GROQ_API_KEY is available
+    # 3. Conservative LLM-based verification (voice mode only when GROQ_API_KEY is available)
     groq_api_key = os.getenv("GROQ_API_KEY", "").strip()
-    if groq_api_key:
+    if body.mode == "voice" and groq_api_key and not refinement.is_corrected:
         try:
             from backend.llm.groq_service import client
             prompt = (
-                "You are an AI spoken query normalizer for an enterprise document search assistant.\n"
+                "You are a precision speech-to-text query normalizer for Nanvi AI, an enterprise assistant.\n"
                 f"The user spoke: \"{pre_corrected}\"\n\n"
-                "Enterprise Context:\n"
-                "- Bridge Construction company records\n"
-                "- Invoices & Finance: invoice_register.csv, invoice_aging.xlsx, payment_register.xlsx\n"
-                "- Procurement: vendor_master.xlsx, procurement_policy.pdf\n"
-                "- Contracts: Mock_Contract_Agreement.pdf, Mock_Contract_Data.xlsx\n"
-                "- Vendors: Sri Ganesh ReadyMix, ACC Cement, InfraTech, Tata Steel\n"
-                "- Topics: invoice numbers, payment status, aging analysis, defect liability periods, bank guarantees\n\n"
-                "Task:\n"
-                "1. If the query has small speech recognition typos or mishearings, output the corrected search query.\n"
-                "2. If the query is vague or unclear, set action to 'clarify' with a clarification question and 3 suggestions.\n\n"
-                "Respond STRICTLY with valid JSON in this format:\n"
+                "Rules:\n"
+                "1. Preserve legitimate entity names, company names, people, numbers, codes, and normal words unchanged unless clearly a speech mishearing.\n"
+                "2. Fix 'nandi' -> 'Nanvi' ONLY when clearly addressing Nanvi AI (the assistant); NEVER change real names like 'Nandi Traders' or 'Nandi Hills'.\n"
+                "3. Only output 'clarify' if the input is unintelligible fragments.\n\n"
+                "Respond STRICTLY with valid JSON:\n"
                 "{\n"
                 '  "action": "correct",\n'
                 '  "refined_query": "corrected search query",\n'
                 '  "clarification": null,\n'
-                '  "suggestions": ["Sri Ganesh ReadyMix find invoice", "Invoice aging breakdown", "Contract agreement terms"]\n'
+                '  "suggestions": []\n'
                 "}"
             )
             chat_resp = client.chat.completions.create(
@@ -301,8 +293,8 @@ def refine_voice_query(
                     is_corrected=False,
                     clarification=clarification or "Did you mean to search for one of these company records?",
                     suggestions=suggestions[:3] or [
-                        "Sri Ganesh ReadyMix vendor find invoice",
                         "Show invoice aging breakdown",
+                        "Find matching proposal files",
                         "Bridge contract terms",
                     ],
                 )
@@ -315,7 +307,7 @@ def refine_voice_query(
                 suggestions=suggestions[:3],
             )
         except Exception as exc:
-            logger.warning("LLM query refinement failed, using heuristic fallback: %s", exc)
+            logger.warning("LLM query refinement failed, using deterministic refiner: %s", exc)
 
     # Heuristic fallback (fast, deterministic, zero-latency)
     is_changed = (pre_corrected.strip().lower() != raw.strip().lower())
@@ -326,9 +318,9 @@ def refine_voice_query(
         is_corrected=is_changed,
         clarification=None,
         suggestions=[
-            "Sri Ganesh ReadyMix vendor find invoice",
             "Show invoice aging breakdown",
-            "Bridge contract agreement warranty",
+            "Find matching proposal documents",
+            "Summarize contract terms",
         ],
     )
 
@@ -867,7 +859,7 @@ async def voice_transcribe(
                     "no_speech": True,
                     "reason": reason,
                 }
-            corrected_text = apply_phonetic_corrections(filtered_text)
+            corrected_text = refine_query(filtered_text, mode="voice").refined_query
             return {
                 "text": corrected_text,
                 "confidence": 1.0,

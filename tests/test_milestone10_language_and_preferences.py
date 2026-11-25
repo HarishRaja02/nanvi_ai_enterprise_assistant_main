@@ -131,6 +131,7 @@ class TestEnterpriseVocabularyBiasing:
     """Test enterprise vocabulary biasing and phonetic correction."""
 
     def test_vocabulary_prompt_contents(self):
+        assert "Nanvi" in WHISPER_BIASING_PROMPT
         assert "Asteron Technologies" in WHISPER_BIASING_PROMPT
         assert "CloudNova" in WHISPER_BIASING_PROMPT
         assert "Project Phoenix" in WHISPER_BIASING_PROMPT

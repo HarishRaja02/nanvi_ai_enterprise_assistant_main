@@ -10,6 +10,7 @@ import {
   computeTimeDomainRms,
   isWhisperHallucination,
 } from "../../lib/voiceInputGuard";
+import { refineChatQuery } from "../../lib/queryRefiner";
 
 type RecognitionCallbacks = {
   onInterimText?: (text: string) => void;
@@ -22,6 +23,9 @@ type RecognitionCallbacks = {
 
 // Enterprise domain vocabulary for speech recognition grammar biasing
 export const ENTERPRISE_TERMS = [
+  "Nanvi",
+  "Nanvi AI",
+  "Nanvi Assistant",
   "Project Phoenix",
   "Asteron Technologies",
   "CloudNova",
@@ -53,42 +57,9 @@ export const ENTERPRISE_TERMS = [
   "Crore",
 ];
 
-// Phonetic corrections for common browser speech recognition mishearings
-const PHONETIC_CORRECTIONS: [RegExp, string][] = [
-  [/\baster\s*on(?:\s*tech(?:nologies)?)?\b/gi, "Asteron Technologies"],
-  [/\bcloud\s+nova\b/gi, "CloudNova"],
-  [/\bblue\s+peak\b/gi, "BluePeak"],
-  [/\bnexa\s*corp\b/gi, "NexaCorp"],
-  [/\bproject\s+fenix\b/gi, "Project Phoenix"],
-  [/\bproject\s+phenix\b/gi, "Project Phoenix"],
-  [/\bebidta\b/gi, "EBITDA"],
-  [/\bebit\s*da\b/gi, "EBITDA"],
-  [/\bg\s*s\s*t\b/gi, "GST"],
-  [/\bt\s*d\s*s\b/gi, "TDS"],
-  [/\bc\s*t\s*c\b/gi, "CTC"],
-  [/\bp\s*o\b/gi, "PO"],
-  [/\b(show|find|list|check|get|open|pending|paid|unpaid|all|the)\s+in\s+voices\b/gi, "$1 invoices"],
-  [/\b(show|find|list|check|get|open|pending|paid|unpaid|all|the)\s+in\s+voice\b/gi, "$1 invoice"],
-  [/\bin\s*voice\s*(number|id|#)\b/gi, "invoice $1"],
-  [/\b(?:sri|shri)?\s*ganesh?\s*(?:ready\s*mix|redymix|radymix)?\b/gi, "Sri Ganesh ReadyMix"],
-  [/\b(?:ageing|aging)\s*(?:brakdown|break\s*down)\b/gi, "aging breakdown"],
-  [/\b(?:contrct|contraxt|contarct)\b/gi, "contract"],
-  [/\b(?:agreemnt|aggrement)\b/gi, "agreement"],
-  [/\b(?:warenty|warrenty)\b/gi, "warranty"],
-  [/\b(?:liabilty|liabelity)\b/gi, "liability"],
-  [/\b(?:procument|procuremnt)\b/gi, "procurement"],
-  [/\bfind\s+(?:the\s+)?invoices?\b/gi, "find invoice"],
-  [/\b(\d+(?:\.\d+)?)\s*lacs?\b/gi, "$1 lakh"],
-  [/\b(\d+(?:\.\d+)?)\s*crs?\b/gi, "$1 crore"],
-];
-
 export function applyPhoneticCorrections(text: string): string {
   if (!text) return "";
-  let out = text;
-  for (const [re, rep] of PHONETIC_CORRECTIONS) {
-    out = out.replace(re, rep);
-  }
-  return out;
+  return refineChatQuery(text, { mode: "voice" }).refinedQuery;
 }
 
 // Cross-browser speech recognition typing

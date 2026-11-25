@@ -176,4 +176,26 @@ describe("Composer", () => {
     expect(await screen.findByText(/Could not detect clear speech/i)).toBeInTheDocument();
     expect(onSend).not.toHaveBeenCalled();
   });
+
+  it("applies the precision chat refine layer on send while leaving real entities untouched", async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn().mockResolvedValue(true);
+    render(
+      <Composer
+        busy={false}
+        onSend={onSend}
+        focusToken={0}
+        ragEnabled
+      />,
+    );
+
+    const input = screen.getByRole("textbox", { name: "Ask Nanvi" });
+    await user.type(input, "hi nandi find proposl documnts");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    expect(onSend).toHaveBeenLastCalledWith("hi Nanvi find proposal documents", true, undefined);
+
+    await user.type(input, "find invoices for Nandi Traders");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    expect(onSend).toHaveBeenLastCalledWith("find invoices for Nandi Traders", true, undefined);
+  });
 });

@@ -113,6 +113,14 @@ class ChatService:
             )
 
         now = datetime.now(timezone.utc)
+        from backend.chat.query_refiner import refine_query
+        refinement = refine_query(
+            query,
+            mode="chat",
+            local_context=getattr(request, "local_context", None),
+        )
+        if refinement.is_corrected and refinement.refined_query:
+            query = refinement.refined_query
         self._store.append(conversation_id, ChatMessage("user", query, now))
 
         request_id = get_request_id() if get_request_id() != "-" else uuid4().hex
@@ -600,6 +608,8 @@ class ChatService:
         log_event(logger, "chat_service_started", actor_id=user.user_id, tenant_id=user.tenant_id, query_length=len(query), capability_count=len(capabilities))
         responses: list[AgentResponse] = []
         traces: list[str] = []
+        if refinement.is_corrected and refinement.changes_summary:
+            traces.append(f"Query refined ({refinement.changes_summary})")
 
         def invoke_capability(capability: Capability):
             agent_query = effective_query if (capability == Capability.KNOWLEDGE or effective_query != query) else query

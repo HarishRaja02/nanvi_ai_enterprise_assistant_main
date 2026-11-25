@@ -35,6 +35,14 @@ describe("PrivacyPolicyPage", () => {
 
     // Contact placeholders
     expect(screen.getByText(/\[Insert Official Privacy & Data Protection Contact Email/i)).toBeInTheDocument();
+
+    // Sections 11-13
+    expect(screen.getByRole("link", { name: /11\. Age Restriction & Enterprise Use/i })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /12\. Security Incidents & Breach Notification/i })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /13\. Changes to This Privacy Policy/i })).toBeInTheDocument();
+    expect(screen.getByText(/individuals under the age of 16/i)).toBeInTheDocument();
+    expect(screen.getByText(/confirmed security incident/i)).toBeInTheDocument();
+    expect(screen.getByText(/We encourage you to review this Privacy Policy periodically\./i)).toBeInTheDocument();
   });
 
   it("calls navigation callbacks when tab or back buttons are clicked", async () => {

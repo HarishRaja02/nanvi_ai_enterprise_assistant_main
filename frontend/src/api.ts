@@ -1468,7 +1468,7 @@ export class NanviApiClient {
 
 
 
-  refineSpokenQuery(query: string, conversationId?: string) {
+  refineSpokenQuery(query: string, conversationId?: string, mode: "voice" | "chat" = "voice") {
 
     return this.request<{
 
@@ -1488,7 +1488,7 @@ export class NanviApiClient {
 
       method: "POST",
 
-      body: JSON.stringify({ query, conversation_id: conversationId }),
+      body: JSON.stringify({ query, conversation_id: conversationId, mode }),
 
     });
 
