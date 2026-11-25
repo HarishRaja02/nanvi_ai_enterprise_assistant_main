@@ -399,7 +399,6 @@ class CompanyDataService:
         if fn_norm == "Contracts":
             if user_dept in ("finance", "legal", "executive"):
                 return True
-            return bool(user_roles & {Role.SUPERIOR, Role.SUPERVISOR, Role.CEO, Role.FINANCE, Role.MANAGER, Role.IT_ADMIN})
             return bool(user_roles & {Role.SUPERIOR, Role.SUPERVISOR, Role.PROJECT_ENGINEER, Role.CEO, Role.FINANCE, Role.MANAGER, Role.IT_ADMIN})
 
         if fn_norm == "Customers":
@@ -414,11 +413,8 @@ class CompanyDataService:
 
         # HR folder: General HR access allowed for all enterprise users; sensitive HR files filtered in is_file_authorized
         if fn_norm == "HR":
-            return bool(user_roles & {Role.SUPERIOR, Role.SUPERVISOR, Role.CEO, Role.HR, Role.MANAGER, Role.IT_ADMIN, Role.PROJECT_ENGINEER, Role.EMPLOYEE})
             return bool(user_roles & {Role.SUPERIOR, Role.SUPERVISOR, Role.CEO, Role.HR, Role.MANAGER, Role.IT_ADMIN, Role.PROJECT_ENGINEER, Role.EMPLOYEE, Role.INTERN})
 
-        # Projects, Customers, Uploads, General, and any custom/user-selected folders are authorized for all enterprise roles
-        all_enterprise_roles = {Role.SUPERIOR, Role.SUPERVISOR, Role.CEO, Role.FINANCE, Role.HR, Role.MANAGER, Role.EMPLOYEE, Role.PROJECT_ENGINEER, Role.IT_ADMIN}
         # Projects, Uploads, General, and any custom/user-selected folders are authorized for all enterprise roles
         all_enterprise_roles = {Role.SUPERIOR, Role.SUPERVISOR, Role.CEO, Role.FINANCE, Role.HR, Role.MANAGER, Role.EMPLOYEE, Role.INTERN, Role.PROJECT_ENGINEER, Role.IT_ADMIN}
         return bool(user_roles & all_enterprise_roles)
@@ -432,7 +428,6 @@ class CompanyDataService:
             sensitive_terms = ("salary", "payroll", "compensation", "performance", "disciplinary", "medical", "tax", "resume", "resumes", "employee_record", "employee_records")
             if any(term in path for term in sensitive_terms):
                 return bool(user_roles & {Role.SUPERIOR, Role.SUPERVISOR, Role.CEO, Role.FINANCE, Role.HR, Role.MANAGER, Role.IT_ADMIN})
-            if Role.EMPLOYEE in user_roles:
             if Role.EMPLOYEE in user_roles or Role.INTERN in user_roles:
                 return any(term in path for term in ("handbook", "benefit", "leave", "holiday", "onboarding", "workplace", "policy"))
         return True

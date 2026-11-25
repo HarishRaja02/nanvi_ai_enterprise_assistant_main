@@ -1,4 +1,3 @@
-import { RefreshCw } from "lucide-react";
 import { RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "../ui/Button";
 import { Skeleton } from "../ui/Skeleton";
@@ -16,7 +15,6 @@ type Props = {
 };
 
 /** Recent conversations with explicit loading, error (with recovery), empty and populated states. */
-export function ConversationList({ history, loading, error, activeId, onSelect, onRetry }: Props) {
 export function ConversationList({ history, loading, error, activeId, onSelect, onDelete, onRetry }: Props) {
   if (loading && history.length === 0) {
     return (
@@ -45,7 +43,6 @@ export function ConversationList({ history, loading, error, activeId, onSelect, 
             {group.items.map((c) => {
               const title = conversationTitle(c);
               return (
-                <li key={c.conversation_id}>
                 <li key={c.conversation_id} className="history-item-row">
                   <button
                     type="button"

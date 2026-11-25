@@ -22,10 +22,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
 
-LocalRole = Literal["Admin", "Superior", "Supervisor", "Project Engineer", "Employee"]
 LocalRole = Literal["Admin", "Superior", "Supervisor", "Project Engineer", "Employee", "Intern"]
 ADMINISTRATIVE_ROLES = {Role.SUPERIOR, Role.SUPERVISOR, Role.CEO, Role.FINANCE, Role.ADMIN}
-SUPERVISOR_MANAGED_ROLES = {Role.PROJECT_ENGINEER.value, Role.EMPLOYEE.value}
 SUPERVISOR_MANAGED_ROLES = {Role.PROJECT_ENGINEER.value, Role.EMPLOYEE.value, Role.INTERN.value}
 
 TIER_ROLE_MAP: dict[str, str] = {
@@ -277,7 +275,6 @@ def create_local_account(
     is_superior = _require_account_manager(user) and (user.subject == "admin" or bool(user.roles & {Role.SUPERIOR, Role.CEO}))
     clean_role = normalize_role(body.role) or body.role
     if not is_superior and clean_role not in SUPERVISOR_MANAGED_ROLES:
-        raise HTTPException(status_code=403, detail="Supervisors can create Project Engineer and Employee accounts only.")
         raise HTTPException(status_code=403, detail="Supervisors can create Project Engineer, Employee, and Intern accounts only.")
     clean_email = (body.email or "").strip().lower()
     if not clean_email or "@" not in clean_email:
@@ -468,8 +465,6 @@ def update_local_account(
     clean_role = normalize_role(body.role) or body.role
     if not is_superior:
         if target["role"] not in SUPERVISOR_MANAGED_ROLES:
-            raise HTTPException(status_code=403, detail="Supervisors can modify Project Engineer and Employee accounts only.")
-        if body.role and body.role not in SUPERVISOR_MANAGED_ROLES:
             raise HTTPException(status_code=403, detail="Supervisors can modify Project Engineer, Employee, and Intern accounts only.")
         if clean_role and clean_role not in SUPERVISOR_MANAGED_ROLES:
             raise HTTPException(status_code=403, detail="Supervisors cannot assign superior roles.")
@@ -485,7 +480,6 @@ def update_local_account(
             tenant_id=tenant_id,
             display_name=body.display_name,
             email=body.email,
-            role=body.role,
             role=clean_role,
             department=body.department,
             active=body.active,
@@ -525,7 +519,6 @@ def delete_local_account(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     if not is_superior and target["role"] not in SUPERVISOR_MANAGED_ROLES:
-        raise HTTPException(status_code=403, detail="Supervisors can remove Project Engineer and Employee accounts only.")
         raise HTTPException(status_code=403, detail="Supervisors can remove Project Engineer, Employee, and Intern accounts only.")
     if account_id == user.subject:
         raise HTTPException(status_code=400, detail="You cannot remove the account you are currently using.")

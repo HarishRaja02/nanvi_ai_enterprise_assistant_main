@@ -19,9 +19,6 @@ type Tab = "accounts" | "connections" | "folder" | "audit";
 
 export function SettingsPage({ api, identity }: Props) {
   const roles = identity?.roles || [];
-  const canManageUsers = roles.some((role) => ["Superior", "Supervisor", "CEO", "Finance"].includes(role));
-  const canManageOrg = roles.some((role) => ["Superior", "Supervisor", "CEO", "IT Admin"].includes(role));
-  const canViewAudit = roles.some((role) => ["Superior", "CEO", "IT Admin"].includes(role));
   const isAdmin = roles.some((role) => role === "Admin");
   const canManageUsers = roles.some((role) => ["Superior", "Supervisor", "CEO", "Finance", "Admin"].includes(role));
   const canUseIntegrations = roles.some((role) =>
@@ -32,7 +29,6 @@ export function SettingsPage({ api, identity }: Props) {
 
   const availableTabs: Tab[] = [];
   if (canManageUsers) availableTabs.push("accounts");
-  if (canManageOrg) availableTabs.push("connections", "folder");
   if (canUseIntegrations) availableTabs.push("connections", "folder");
   if (canViewAudit) availableTabs.push("audit");
 
@@ -51,7 +47,6 @@ export function SettingsPage({ api, identity }: Props) {
 
   const tabs: { id: Tab; label: string; icon?: ReactNode }[] = [
     ...(canManageUsers ? [{ id: "accounts" as const, label: "User accounts" }] : []),
-    ...(canManageOrg ? [
     ...(canUseIntegrations ? [
       { id: "connections" as const, label: "Connections Hub", icon: <PlugIcon size={16} /> },
       { id: "folder" as const, label: "Local Folders/Files", icon: <FolderIcon size={16} /> },
@@ -83,8 +78,6 @@ export function SettingsPage({ api, identity }: Props) {
       </div>
 
       {activeTab === "accounts" && canManageUsers && identity && <AccountManagement api={api} identity={identity} />}
-      {activeTab === "connections" && canManageOrg && <ConnectionsHub api={api} canManageOrg={canManageOrg} />}
-      {activeTab === "folder" && canManageOrg && (
       {activeTab === "connections" && canUseIntegrations && <ConnectionsHub api={api} canManageOrg={canManageOrg} />}
       {activeTab === "folder" && canUseIntegrations && (
         <div style={{ maxWidth: "800px" }}>

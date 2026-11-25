@@ -474,19 +474,15 @@ def format_structured_invoice_analysis(
             grouped.setdefault(key, []).append(r)
 
         status_label = "unpaid / overdue" if status_filter in ("unpaid_all", "pending", "overdue") else (status_filter or "")
-        yr_note = f" in {year_filter}" if year_filter else ""
         yr_note = f" ({year_filter})" if year_filter else ""
         ent_note = f" matching **{entity_filter.title()}**" if entity_filter else ""
         lines = [
-            f"Found **{len(grouped)} unique customer{'s' if len(grouped) != 1 else ''}** with {status_label} invoices{yr_note}{ent_note} (**{len(filtered)}** total invoice record{'s' if len(filtered) != 1 else ''}):\n"
             f"Found **{len(grouped)} customer{'s' if len(grouped) != 1 else ''}** with {status_label} invoices{yr_note}{ent_note} (**{len(filtered)}** invoice{'s' if len(filtered) != 1 else ''}):\n"
         ]
-        for cust_name in sorted(grouped.keys()):
         for cust_name in sorted(grouped.keys())[:6]:
             items = grouped[cust_name]
             total_sum = 0.0
             cur_sym = ""
-            inv_bits: list[str] = []
             for it in items:
                 amt_num = _parse_numeric_amount(it.get("amount"))
                 if amt_num is not None:
@@ -494,16 +490,10 @@ def format_structured_invoice_analysis(
                 if not cur_sym:
                     raw_a = str(it.get("amount") or "")
                     cur_sym = "INR " if ("INR" in raw_a.upper() or "₹" in raw_a) else ("$ " if "$" in raw_a else "")
-                st = str(it.get("status") or "")
-                dt = str(it.get("invoice_date") or "")
-                inv_bits.append(f"`{it.get('id')}` ({st}{f', {dt}' if dt else ''}, {it.get('amount')})")
             sum_disp = f"{cur_sym}{total_sum:,.2f}" if total_sum > 0 else "N/A"
             inv_ids = ", ".join(f"`{it.get('id')}`" for it in items[:4])
             more_ids = f" +{len(items) - 4} more" if len(items) > 4 else ""
             lines.append(
-                f"• **{cust_name}** — **{len(items)}** {status_label} invoice{'s' if len(items) != 1 else ''} · Total Due: **{sum_disp}**\n"
-                f"  - Invoices: {', '.join(inv_bits[:8])}"
-                + (f" *(+{len(inv_bits) - 8} more)*" if len(inv_bits) > 8 else "")
                 f"• **{cust_name}** — **{len(items)}** invoice{'s' if len(items) != 1 else ''} · Total Due: **{sum_disp}** ({inv_ids}{more_ids})"
             )
         if len(grouped) > 6 or len(filtered) > 5:
@@ -524,16 +514,12 @@ def format_structured_invoice_analysis(
     # Flat per-invoice structured summary
     desc_bits = []
     if status_filter == "paid":
-        desc_bits.append("already **Paid**")
         desc_bits.append("paid")
     elif status_filter == "unpaid_all":
-        desc_bits.append("**Unpaid / Overdue / Pending**")
         desc_bits.append("unpaid / overdue")
     elif status_filter == "overdue":
-        desc_bits.append("**Overdue**")
         desc_bits.append("overdue")
     elif status_filter == "pending":
-        desc_bits.append("**Pending / Unpaid**")
         desc_bits.append("pending")
     if year_filter:
         desc_bits.append(f"from **{year_filter}**")
@@ -559,28 +545,8 @@ def format_structured_invoice_analysis(
 
     party_note = f" across **{len(unique_parties)}** vendors/customers" if len(unique_parties) > 1 and not entity_filter else ""
     lines = [
-        f"Found **{len(filtered)}** verified {hdr_desc} invoice record{'s' if len(filtered) != 1 else ''}{ent_hdr}:\n"
         f"Found **{len(filtered)}** {hdr_desc} invoice{'s' if len(filtered) != 1 else ''}{ent_hdr}{party_note}{year_span}:\n"
     ]
-    for r in filtered[:25]:
-        party = r.get("customer") or r.get("vendor") or "Unknown"
-        vend = r.get("vendor")
-        party_str = f"{party} (Vendor: {vend})" if vend and vend != party else party
-        dates = []
-        if r.get("invoice_date"):
-            dates.append(f"Inv Date: {r['invoice_date']}")
-        if r.get("due_date"):
-            due_bit = f"Due: {r['due_date']}"
-            if r.get("days_overdue"):
-                due_bit += f" ({r['days_overdue']}d overdue)"
-            dates.append(due_bit)
-        date_str = " · ".join(dates) if dates else "Date: N/A"
-        lines.append(
-            f"• **{r.get('id')}** — {party_str} · Amount: **{r.get('amount')}** · Status: **{r.get('status')}** · {date_str}"
-            + (f" · File: `{r.get('file_path') or r.get('filename')}`" if (r.get("file_path") or r.get("filename")) else "")
-        )
-    if len(filtered) > 25:
-        lines.append(f"\n*... and {len(filtered) - 25} more verified matching invoice records.*")
     if len(filtered) > 5:
         lines.append("**Key Highlights**")
 

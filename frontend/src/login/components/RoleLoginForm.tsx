@@ -13,38 +13,30 @@ type RoleOption = {
 const ROLES: RoleOption[] = [
   {
     id: "Superior",
-    label: "Tier 1 (Superior)",
     label: "Tier 1",
     tier: "Tier 1",
     badge: "Executive",
-    description: "Executive Leadership & Top-Level Access (CEO / Director)",
     description: "Super Admin / Management — Executive Leadership & Top-Level Access",
   },
   {
     id: "Supervisor",
-    label: "Tier 2 (Supervisor)",
     label: "Tier 2",
     tier: "Tier 2",
     badge: "Operations",
-    description: "Department Management & Operations",
     description: "Manager / Supervisor — Department Management & Operations",
   },
   {
     id: "Project Engineer",
-    label: "Tier 3 (Project Manager / Project Engineer)",
     label: "Tier 3",
     tier: "Tier 3",
     badge: "Technical",
-    description: "Project Management, Planning & Engineering Operations",
     description: "Project Manager / Team Lead — Projects, Contracts, Customers & Integrations",
   },
   {
     id: "Employee",
-    label: "Tier 4 (Employee)",
     label: "Tier 4",
     tier: "Tier 4",
     badge: "Workspace",
-    description: "Standard Staff & General Workspace",
     description: "Employee — Standard Workspace & Personal Integrations",
   },
   {
@@ -360,18 +352,15 @@ export function RoleLoginForm({ onLogin, loading, error, onNavigateToForgot, onN
             <>
               <Crown size={16} style={{ flexShrink: 0, color: "#16a34a" }} />
               <span>
-                <strong>Tier 1 (Superior):</strong> Executive leadership (CEO, Directors, Executives).
                 <strong>Tier 1 — Super Admin / Management:</strong> Executive leadership & full workspace governance.
               </span>
             </>
           ) : role === "Supervisor" ? (
             <span>
-              <strong>Tier 2 (Supervisor):</strong> Department operations & team oversight.
               <strong>Tier 2 — Manager / Supervisor:</strong> Department operations, team oversight & workspace integrations.
             </span>
           ) : role === "Project Engineer" ? (
             <span>
-              <strong>Tier 3 (Project Manager):</strong> Project management & engineering workflows.
               <strong>Tier 3 — Project Manager / Team Lead:</strong> Projects, contracts, customers, personal integrations & local folders.
             </span>
           ) : role === "Employee" ? (
@@ -380,7 +369,6 @@ export function RoleLoginForm({ onLogin, loading, error, onNavigateToForgot, onN
             </span>
           ) : (
             <span>
-              <strong>Tier 4 (Employee):</strong> Enterprise staff access & general workspace.
               <strong>Tier 5 — Intern / Trainee:</strong> Guided access to general & project files and reports.
             </span>
           )}

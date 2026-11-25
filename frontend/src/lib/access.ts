@@ -3,7 +3,6 @@
  * Backend authorization remains authoritative and every backend request is re-checked server-side.
  */
 export type Role =
-  | "Superior" | "Supervisor" | "Project Engineer" | "Employee"
   | "Superior" | "Supervisor" | "Project Engineer" | "Employee" | "Intern"
   | "CEO" | "Finance" | "HR" | "Manager" | "IT Admin" | "Admin";
 
@@ -11,20 +10,13 @@ export type Permission =
   | "FILE_READ" | "FILE_WRITE" | "EMAIL_READ" | "EMAIL_SEND"
   | "DATABASE_READ" | "DATABASE_WRITE" | "REPORT_CREATE" | "REPORT_DOWNLOAD"
   | "FINANCE_READ" | "HR_READ" | "AUDIT_READ" | "USER_MANAGE" | "ADMIN_ACCESS"
-  | "SYSTEM_LOGS_READ";
   | "SYSTEM_LOGS_READ" | "CONNECTION_READ";
 
 export type View = "Chat" | "Knowledge" | "Email" | "Data" | "Reports" | "Finance" | "HR" | "Audit" | "Settings" | "AdminDashboard" | "Logs" | "TextSize";
 
-export type CanonicalRole = "Admin" | "Superior" | "Supervisor" | "Project Engineer" | "Employee";
 export type CanonicalRole = "Admin" | "Superior" | "Supervisor" | "Project Engineer" | "Employee" | "Intern";
 
 export const ROLE_PERMISSIONS: Record<CanonicalRole, Permission[]> = {
-  Admin: ["FILE_READ", "FILE_WRITE", "EMAIL_READ", "EMAIL_SEND", "DATABASE_READ", "DATABASE_WRITE", "REPORT_CREATE", "REPORT_DOWNLOAD", "FINANCE_READ", "HR_READ", "AUDIT_READ", "USER_MANAGE", "ADMIN_ACCESS", "SYSTEM_LOGS_READ"],
-  Superior: ["FILE_READ", "FILE_WRITE", "EMAIL_READ", "EMAIL_SEND", "DATABASE_READ", "DATABASE_WRITE", "REPORT_CREATE", "REPORT_DOWNLOAD", "FINANCE_READ", "HR_READ", "AUDIT_READ", "USER_MANAGE", "SYSTEM_LOGS_READ"],
-  Supervisor: ["FILE_READ", "FILE_WRITE", "EMAIL_READ", "EMAIL_SEND", "DATABASE_READ", "DATABASE_WRITE", "REPORT_CREATE", "REPORT_DOWNLOAD", "FINANCE_READ", "HR_READ", "USER_MANAGE"],
-  "Project Engineer": ["FILE_READ"],
-  Employee: ["FILE_READ"],
   Admin: ["FILE_READ", "FILE_WRITE", "EMAIL_READ", "EMAIL_SEND", "DATABASE_READ", "DATABASE_WRITE", "REPORT_CREATE", "REPORT_DOWNLOAD", "FINANCE_READ", "HR_READ", "AUDIT_READ", "USER_MANAGE", "ADMIN_ACCESS", "SYSTEM_LOGS_READ", "CONNECTION_READ"],
   Superior: ["FILE_READ", "FILE_WRITE", "EMAIL_READ", "EMAIL_SEND", "DATABASE_READ", "DATABASE_WRITE", "REPORT_CREATE", "REPORT_DOWNLOAD", "FINANCE_READ", "HR_READ", "AUDIT_READ", "USER_MANAGE", "SYSTEM_LOGS_READ", "CONNECTION_READ"],
   Supervisor: ["FILE_READ", "FILE_WRITE", "EMAIL_READ", "EMAIL_SEND", "DATABASE_READ", "DATABASE_WRITE", "REPORT_CREATE", "REPORT_DOWNLOAD", "FINANCE_READ", "HR_READ", "USER_MANAGE", "CONNECTION_READ"],
@@ -66,11 +58,6 @@ const ROLE_ALIASES: Record<string, CanonicalRole> = {
 };
 
 export const ROLE_TIER_DISPLAY: Record<string, string> = {
-  Superior: "Tier 1 (Superior)",
-  Supervisor: "Tier 2 (Supervisor)",
-  "Project Engineer": "Tier 3 (Project Manager / Project Engineer)",
-  "Project Manager": "Tier 3 (Project Manager)",
-  Employee: "Tier 4 (Employee)",
   Superior: "Tier 1",
   Supervisor: "Tier 2",
   "Project Engineer": "Tier 3",
@@ -83,15 +70,6 @@ export const ROLE_TIER_DISPLAY: Record<string, string> = {
   "Intern / Trainee": "Tier 5",
   Admin: "Admin Portal",
   "Admin Portal": "Admin Portal",
-  "Tier 1": "Tier 1 (Superior)",
-  "Tier 1 (Superior)": "Tier 1 (Superior)",
-  "Tier 2": "Tier 2 (Supervisor)",
-  "Tier 2 (Supervisor)": "Tier 2 (Supervisor)",
-  "Tier 3": "Tier 3 (Project Manager / Project Engineer)",
-  "Tier 3 (Project Manager)": "Tier 3 (Project Manager)",
-  "Tier 3 (Project Manager / Project Engineer)": "Tier 3 (Project Manager / Project Engineer)",
-  "Tier 4": "Tier 4 (Employee)",
-  "Tier 4 (Employee)": "Tier 4 (Employee)",
   CEO: "Tier 1",
   Finance: "Tier 2",
   Manager: "Tier 2",
@@ -169,7 +147,6 @@ export const NAV_GROUPS: NavGroup[] = [
     id: "governance", label: "Governance",
     items: [
       { id: "Audit", label: "Audit", permission: "AUDIT_READ", hidden: true },
-      { id: "Settings", label: "Settings", permission: "USER_MANAGE" },
       { id: "Settings", label: "Settings", permission: "CONNECTION_READ" },
       { id: "Logs", label: "Logs", permission: "SYSTEM_LOGS_READ" },
     ],

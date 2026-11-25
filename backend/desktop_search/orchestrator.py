@@ -953,18 +953,12 @@ class DesktopSearchWorkspace:
         top_chunks: list[dict[str, Any]] = []
 
         if total_matching > 0:
-            bd_str = ", ".join(f"{k}: {v}" for k, v in list(breakdown.items())[:8])
             bd_str = ", ".join(f"{k}: {v}" for k, v in list(breakdown.items())[:5])
             summary_lines = [
-                f"Evaluated **{total_scanned}** unique {domain} records across **{scanned_file_count or folder_stats.get('total_files', 0)}** authorized files: "
-                f"found **{total_matching} unique {domain}** matching your {lbl_field.lower()} filter"
                 f"Found **{total_matching} {domain}** matching your {lbl_field.lower()} filter"
                 + (f" ({bd_str})" if bd_str else "")
-                + ".",
-                + f" across **{scanned_file_count or folder_stats.get('total_files', 0)}** files:",
                 + f" across **{scanned_file_count or folder_stats.get('total_files', 0)}** authorized files:",
             ]
-            for rec in matched_recs[:20]:
             if total_matching > 5:
                 summary_lines.append("**Key Highlights**")
             for rec in matched_recs[:5]:
@@ -972,20 +966,15 @@ class DesktopSearchWorkspace:
                 v_str = f"INR {int(v_num):,}" if isinstance(v_num, (int, float)) and float(v_num).is_integer() else (
                     f"{v_num:,.2f}" if isinstance(v_num, (int, float)) else str(rec.get("salary_display") or rec.get("value_display") or "")
                 )
-                bits = [b for b in (rec.get("id"), rec.get("department") or rec.get("segment"), rec.get("role"), rec.get("status")) if b]
                 meta_short = " · ".join(b for b in (rec.get("id"), rec.get("department") or rec.get("segment")) if b)
                 src_fp = (rec.get("files") or [""])[0]
                 src_name = Path(src_fp).name if src_fp else ""
                 summary_lines.append(
-                    f"- **{rec.get('name') or rec.get('id')}** ({' · '.join(bits)}) — {lbl_field}: **{v_str}**"
-                    + (f" · File: `{src_fp}`" if src_fp else "")
                     f"• **{rec.get('name') or rec.get('id')}**"
                     + (f" ({meta_short})" if meta_short else "")
                     + f" · **{v_str}**"
                     + (f" (`{src_name}`)" if src_name else "")
                 )
-            if total_matching > 20:
-                summary_lines.append(f"*... and {total_matching - 20} more qualifying {domain} records matched.*")
             if total_matching > 5:
                 summary_lines.extend([
                     "",

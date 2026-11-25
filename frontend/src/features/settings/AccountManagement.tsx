@@ -32,16 +32,10 @@ import { useToast } from "../../components/ui/Toast";
 
 type Props = { api: NanviApiClient; identity: UserIdentity };
 
-const ALL_ROLES: LocalAccountRole[] = ["Superior", "Supervisor", "Project Engineer", "Employee"];
-const SUPERVISOR_ROLES: LocalAccountRole[] = ["Project Engineer", "Employee"];
 const ALL_ROLES: LocalAccountRole[] = ["Superior", "Supervisor", "Project Engineer", "Employee", "Intern"];
 const SUPERVISOR_ROLES: LocalAccountRole[] = ["Project Engineer", "Employee", "Intern"];
 
 export const ROLE_TIER_LABELS: Record<LocalAccountRole, string> = {
-  Superior: "Tier 1 (Superior)",
-  Supervisor: "Tier 2 (Supervisor)",
-  "Project Engineer": "Tier 3 (Project Manager / Project Engineer)",
-  Employee: "Tier 4 (Employee)",
   Superior: "Tier 1 — Super Admin / Management",
   Supervisor: "Tier 2 — Manager / Supervisor",
   "Project Engineer": "Tier 3 — Project Manager / Team Lead",
@@ -484,7 +478,6 @@ export function AccountManagement({ api, identity }: Props) {
               <p>
                 {isSuperior
                   ? "Provision enterprise credentials and manage role-based permissions."
-                  : "Supervisors can create Project Engineer and Employee accounts."}
                   : "Supervisors can create Project Engineer, Employee, and Intern accounts."}
               </p>
             </div>

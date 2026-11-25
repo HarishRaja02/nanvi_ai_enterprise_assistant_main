@@ -1,13 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { permissionsFor, visibleNav } from "./access";
 import { formatRoleTier, permissionsFor, visibleNav } from "./access";
 
 const ids = (perms: ReturnType<typeof permissionsFor>) => visibleNav(perms).flatMap((g) => g.items.map((i) => i.id));
 
 describe("access (UX-only visibility)", () => {
-  it("shows only modules a role has permission for, hiding Knowledge, Finance, HR, Audit, and Reports by default", () => {
-    expect(ids(permissionsFor(["Employee"]))).toEqual(["Chat"]);
-    expect(ids(permissionsFor(["Project Engineer"]))).toEqual(["Chat"]);
   it("shows only modules a role has permission for across Tiers 1-5", () => {
     expect(ids(permissionsFor(["Intern"]))).toEqual(["Chat"]);
     expect(ids(permissionsFor(["Employee"]))).toEqual(["Chat", "Email", "Data", "Settings"]);
@@ -31,7 +27,6 @@ describe("access (UX-only visibility)", () => {
   });
 
   it("unions permissions when the backend reports several roles", () => {
-    expect(ids(permissionsFor(["Employee", "Supervisor"]))).toContain("Email");
     expect(ids(permissionsFor(["Intern", "Supervisor"]))).toContain("Email");
   });
   it("can include hidden modules when includeHidden is true", () => {

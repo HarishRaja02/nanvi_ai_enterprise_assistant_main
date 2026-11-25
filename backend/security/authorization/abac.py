@@ -83,7 +83,6 @@ def resource_allows(
         )
         if restricted_department == "HR" and any(term in resource_path for term in sensitive_hr_terms):
             return False
-        if restricted_department == "Projects" and Role.PROJECT_ENGINEER in user.roles:
         if restricted_department == "Projects" and (
             user.roles & {Role.PROJECT_ENGINEER, Role.EMPLOYEE, Role.INTERN}
         ):
@@ -92,7 +91,6 @@ def resource_allows(
             return True
         if restricted_department == "HR" and Role.PROJECT_ENGINEER in user.roles:
             return True
-        if restricted_department == "HR" and Role.EMPLOYEE in user.roles:
         if restricted_department == "HR" and (Role.EMPLOYEE in user.roles or Role.INTERN in user.roles):
             employee_facing_terms = ("handbook", "benefit", "leave", "holiday", "onboarding", "workplace", "policy")
             return any(term in resource_path for term in employee_facing_terms)

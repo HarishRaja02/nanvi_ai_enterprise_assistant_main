@@ -487,7 +487,6 @@ class LocalAccountStore:
             raise ValueError("User ID cannot contain spaces.")
         if not re.match(r"^[a-zA-Z0-9._-]+$", username.strip()):
             raise ValueError("User ID can only contain letters, numbers, periods (.), underscores (_), and hyphens (-).")
-        if role not in {Role.SUPERIOR.value, Role.SUPERVISOR.value, Role.PROJECT_ENGINEER.value, Role.EMPLOYEE.value, "Admin", "CEO", "Finance"}:
         if role not in {Role.SUPERIOR.value, Role.SUPERVISOR.value, Role.PROJECT_ENGINEER.value, Role.EMPLOYEE.value, Role.INTERN.value, "Admin", "CEO", "Finance"}:
             raise ValueError("Choose one of the supported user roles.")
 

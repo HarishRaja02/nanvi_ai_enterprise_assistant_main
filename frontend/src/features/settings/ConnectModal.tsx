@@ -235,14 +235,12 @@ export function ConnectModal({ open, provider, onClose, onSuccess, api, canManag
                 textAlign: "left",
                 cursor: canManageOrg ? "pointer" : "not-allowed",
               }}
-              title={!canManageOrg ? "Requires Administrator privileges" : undefined}
               title={!canManageOrg ? "Requires Tier 1–2 / Admin privileges" : undefined}
             >
               <div style={{ fontWeight: 600, fontSize: "0.8125rem", color: "var(--text, #0f172a)" }}>
                 Organization Account
               </div>
               <div style={{ fontSize: "0.6875rem", color: "var(--text-muted, #64748b)", marginTop: "0.125rem" }}>
-                {canManageOrg ? "Shared workspace resource for authorized roles." : "Requires Admin privileges."}
                 {canManageOrg ? "Shared workspace resource for authorized roles." : "Requires Tier 1–2 / Admin privileges."}
               </div>
             </button>

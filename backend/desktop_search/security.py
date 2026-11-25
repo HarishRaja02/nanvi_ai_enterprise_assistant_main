@@ -503,12 +503,9 @@ def resolve_allowed_compartments(search_filter: SearchFilter) -> tuple[str, ...]
 
     if Role.HR in user.roles:
         allowed.extend(["comp_hr_sensitive", "comp_hr_public", "comp_customers"])
-    elif Role.PROJECT_ENGINEER in user.roles:
     if Role.PROJECT_ENGINEER in user.roles:
         allowed.extend(["comp_hr_public", "comp_customers", "comp_contracts"])
     if Role.EMPLOYEE in user.roles or Role.INTERN in user.roles:
-        allowed.append("comp_hr_public")
-    elif Role.EMPLOYEE in user.roles:
         allowed.append("comp_hr_public")
 
     if user.department:

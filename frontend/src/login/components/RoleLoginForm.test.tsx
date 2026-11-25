@@ -12,29 +12,21 @@ describe("RoleLoginForm", () => {
     expect(screen.getByRole("heading", { name: "Sign in to Nanvi" })).toBeInTheDocument();
 
     // Roles are hidden by default until the dropdown button is clicked
-    expect(screen.queryByRole("button", { name: /Supervisor/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Project Engineer/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Tier 2" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Tier 3" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Tier 5" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Tier 2/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Tier 3/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Tier 5/i })).not.toBeInTheDocument();
 
-    // Click the dropdown button to reveal roles
-    const dropdownBtn = screen.getByRole("button", { name: /Superior/i });
     // Outside trigger shows plain Tier 1 without parenthetical role title
     const dropdownBtn = screen.getByRole("button", { name: /Tier 1/i });
     expect(dropdownBtn).toHaveAttribute("aria-expanded", "false");
     expect(dropdownBtn).not.toHaveTextContent(/Superior/i);
     await user.click(dropdownBtn);
 
-    // Roles are now visible in the dropdown
-    expect(screen.getByRole("button", { name: /Supervisor/i })).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByRole("button", { name: /Project Engineer/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Employee/i })).toBeInTheDocument();
     // Dropdown buttons show Tier 1..Tier 5 cleanly without full role names
-    expect(screen.getByRole("button", { name: "Tier 2" })).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByRole("button", { name: "Tier 3" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Tier 4" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Tier 5" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Tier 2/i })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: /Tier 3/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Tier 4/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Tier 5/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Project Engineer/i })).not.toBeInTheDocument();
 
     // Try submitting without credentials -> validation error
@@ -42,18 +34,13 @@ describe("RoleLoginForm", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(/password/i);
     expect(onLogin).not.toHaveBeenCalled();
 
-    // Re-open dropdown if it was closed or select Project Engineer
-    if (!screen.queryByRole("button", { name: /Project Engineer/i })) {
-      await user.click(screen.getByRole("button", { name: /Superior/i }));
     // Select Tier 3 and verify inside description shows Project Manager / Team Lead
-    if (!screen.queryByRole("button", { name: "Tier 3" })) {
+    if (!screen.queryByRole("button", { name: /Tier 3/i })) {
       await user.click(screen.getByRole("button", { name: /Tier 1/i }));
     }
-    await user.click(screen.getByRole("button", { name: /Project Engineer/i }));
-    await user.click(screen.getByRole("button", { name: "Tier 3" }));
+    await user.click(screen.getByRole("button", { name: /Tier 3/i }));
 
-    // Selected role button now reflects Project Engineer
-    expect(screen.getByRole("button", { name: /Project Engineer/i })).toBeInTheDocument();
+    // Selected role button now reflects Tier 3
     expect(screen.getByRole("button", { name: /Tier 3/i })).toBeInTheDocument();
     expect(screen.getByText(/Project Manager \/ Team Lead/i)).toBeInTheDocument();
 
