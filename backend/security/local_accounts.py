@@ -198,37 +198,41 @@ class LocalAccountStore:
 
     @contextmanager
     def _connect(self):
+        pg_cm = None
         if self._dsn:
             is_serverless = bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME") or os.getenv("VERCEL_ENV"))
             timeout_sec = 4 if is_serverless else 8
+            pool_exc: Exception | None = None
             try:
                 if self._pool is not None:
-                    with self._pool.connection(timeout=timeout_sec) as conn:
-                        yield conn
-                    return
-                import psycopg
-                from psycopg.rows import dict_row
-                with psycopg.connect(
-                    self._dsn,
-                    row_factory=dict_row,
-                    connect_timeout=timeout_sec,
-                    prepare_threshold=None,
-                ) as conn:
-                    yield conn
-                return
-            except Exception as pool_exc:
-                # Retry once with a fresh direct connection before falling back (never wipe self._dsn permanently)
-                try:
+                    cm = self._pool.connection(timeout=timeout_sec)
+                    conn = cm.__enter__()
+                    pg_cm = (cm, conn)
+                else:
                     import psycopg
                     from psycopg.rows import dict_row
-                    with psycopg.connect(
+                    cm = psycopg.connect(
                         self._dsn,
                         row_factory=dict_row,
                         connect_timeout=timeout_sec,
                         prepare_threshold=None,
-                    ) as conn:
-                        yield conn
-                    return
+                    )
+                    conn = cm.__enter__()
+                    pg_cm = (cm, conn)
+            except Exception as exc:
+                pool_exc = exc
+                # Retry once with a fresh direct connection before falling back (never wipe self._dsn permanently)
+                try:
+                    import psycopg
+                    from psycopg.rows import dict_row
+                    cm = psycopg.connect(
+                        self._dsn,
+                        row_factory=dict_row,
+                        connect_timeout=timeout_sec,
+                        prepare_threshold=None,
+                    )
+                    conn = cm.__enter__()
+                    pg_cm = (cm, conn)
                 except Exception as direct_exc:
                     import logging
                     logging.getLogger(__name__).warning(
@@ -245,6 +249,18 @@ class LocalAccountStore:
                         except Exception:
                             pass
                         self._pool = None
+
+        if pg_cm is not None:
+            cm, conn = pg_cm
+            exc_info: tuple[Any, Any, Any] = (None, None, None)
+            try:
+                yield conn
+            except BaseException:
+                exc_info = sys.exc_info()
+                raise
+            finally:
+                cm.__exit__(*exc_info)
+            return
 
         conn = None
         try:
@@ -310,11 +326,15 @@ class LocalAccountStore:
                         """
                     )
                     try:
+                        connection.execute("SAVEPOINT sp_nanvi_role_check;")
                         connection.execute("ALTER TABLE public.nanvi_local_accounts DROP CONSTRAINT IF EXISTS nanvi_local_accounts_role_check;")
-                        connection.execute("ALTER TABLE public.nanvi_local_accounts ADD CONSTRAINT nanvi_local_accounts_role_check CHECK (role = ANY (ARRAY['Admin'::text, 'Superior'::text, 'Supervisor'::text, 'Project Engineer'::text, 'Employee'::text, 'CEO'::text, 'Finance'::text]));")
                         connection.execute("ALTER TABLE public.nanvi_local_accounts ADD CONSTRAINT nanvi_local_accounts_role_check CHECK (role = ANY (ARRAY['Admin'::text, 'Superior'::text, 'Supervisor'::text, 'Project Engineer'::text, 'Employee'::text, 'Intern'::text, 'CEO'::text, 'Finance'::text]));")
+                        connection.execute("RELEASE SAVEPOINT sp_nanvi_role_check;")
                     except Exception:
-                        pass
+                        try:
+                            connection.execute("ROLLBACK TO SAVEPOINT sp_nanvi_role_check;")
+                        except Exception:
+                            connection.rollback()
                     connection.execute(
                         f"""
                         CREATE TABLE IF NOT EXISTS {reset_table} (
@@ -339,10 +359,15 @@ class LocalAccountStore:
                         """
                     )
                     try:
+                        connection.execute("SAVEPOINT sp_nanvi_indexes;")
                         connection.execute("CREATE INDEX IF NOT EXISTS idx_nanvi_reset_tokens_acc ON public.nanvi_password_reset_tokens(tenant_id, account_id);")
                         connection.execute("CREATE INDEX IF NOT EXISTS idx_nanvi_accounts_email ON public.nanvi_local_accounts(tenant_id, LOWER(email));")
+                        connection.execute("RELEASE SAVEPOINT sp_nanvi_indexes;")
                     except Exception:
-                        pass
+                        try:
+                            connection.execute("ROLLBACK TO SAVEPOINT sp_nanvi_indexes;")
+                        except Exception:
+                            connection.rollback()
                     connection.commit()
                 else:
                     connection.execute(
@@ -686,26 +711,43 @@ class LocalAccountStore:
             dept_table = self._dept_table_for(connection)
             account_table = self._table_for(connection)
             placeholder = self._placeholder_for(connection)
+            is_pg = self._is_pg(connection)
             try:
+                if is_pg:
+                    connection.execute("SAVEPOINT sp_list_depts;")
                 rows = connection.execute(
                     f"SELECT name FROM {dept_table} WHERE tenant_id = {placeholder}",
                     (tenant_id,),
                 ).fetchall()
+                if is_pg:
+                    connection.execute("RELEASE SAVEPOINT sp_list_depts;")
                 for r in rows:
                     if r["name"] and r["name"].strip():
                         depts.add(r["name"].strip())
             except Exception:
-                pass
+                if is_pg:
+                    try:
+                        connection.execute("ROLLBACK TO SAVEPOINT sp_list_depts;")
+                    except Exception:
+                        connection.rollback()
             try:
+                if is_pg:
+                    connection.execute("SAVEPOINT sp_acc_depts;")
                 acc_rows = connection.execute(
                     f"SELECT DISTINCT department FROM {account_table} WHERE tenant_id = {placeholder} AND department IS NOT NULL",
                     (tenant_id,),
                 ).fetchall()
+                if is_pg:
+                    connection.execute("RELEASE SAVEPOINT sp_acc_depts;")
                 for r in acc_rows:
                     if r["department"] and r["department"].strip():
                         depts.add(r["department"].strip())
             except Exception:
-                pass
+                if is_pg:
+                    try:
+                        connection.execute("ROLLBACK TO SAVEPOINT sp_acc_depts;")
+                    except Exception:
+                        connection.rollback()
         return sorted(list(depts), key=lambda d: d.casefold())
 
     def add_department(self, tenant_id: str, name: str) -> list[str]:

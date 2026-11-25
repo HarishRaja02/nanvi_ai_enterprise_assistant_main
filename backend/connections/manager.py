@@ -109,8 +109,9 @@ class ConnectionManager:
         if not self._force_sqlite and self._database_url:
 
             try:
+                import os
                 import psycopg
-                with psycopg.connect(self._database_url, autocommit=True, connect_timeout=3) as conn:
+                with psycopg.connect(self._database_url, autocommit=True, connect_timeout=4, prepare_threshold=None) as conn:
                     with conn.cursor() as cur:
                         cur.execute("SELECT 1;")
                 run_connections_migrations(self._database_url)
@@ -118,12 +119,13 @@ class ConnectionManager:
                 try:
                     from psycopg_pool import ConnectionPool
                     from psycopg.rows import dict_row
+                    is_serverless = bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME") or os.getenv("VERCEL_ENV"))
                     self._pg_pool = ConnectionPool(
                         self._database_url,
-                        min_size=1,
-                        max_size=5,
+                        min_size=0 if is_serverless else 1,
+                        max_size=2 if is_serverless else 5,
                         timeout=5,
-                        kwargs={"autocommit": True, "row_factory": dict_row},
+                        kwargs={"autocommit": True, "row_factory": dict_row, "connect_timeout": 4, "prepare_threshold": None},
                         open=True,
                     )
                 except Exception as p_err:
@@ -138,8 +140,9 @@ class ConnectionManager:
         self._use_postgres = False
         if not self._sqlite_path:
             import os
-            if os.getenv("VERCEL"):
-                self._sqlite_path = "/tmp/connections.db"
+            import tempfile
+            if os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME") or os.getenv("VERCEL_ENV"):
+                self._sqlite_path = str(Path(tempfile.gettempdir()) / "connections.db")
             else:
                 data_dir = Path(__file__).resolve().parent.parent.parent / "data"
                 try:
@@ -165,7 +168,7 @@ class ConnectionManager:
                 except Exception as exc:
                     logger.warning("Pooled execute failed (%s); trying direct connect.", exc)
             import psycopg
-            with psycopg.connect(self._database_url, autocommit=True, connect_timeout=5) as conn:
+            with psycopg.connect(self._database_url, autocommit=True, connect_timeout=5, prepare_threshold=None) as conn:
                 with conn.cursor() as cur:
                     cur.execute(pg_sql, params)
         else:
@@ -186,7 +189,7 @@ class ConnectionManager:
                     logger.warning("Pooled query failed (%s); trying direct connect.", exc)
             import psycopg
             from psycopg.rows import dict_row
-            with psycopg.connect(self._database_url, connect_timeout=5, row_factory=dict_row) as conn:
+            with psycopg.connect(self._database_url, connect_timeout=5, row_factory=dict_row, prepare_threshold=None) as conn:
                 with conn.cursor() as cur:
                     cur.execute(pg_sql, params)
                     return list(cur.fetchall())

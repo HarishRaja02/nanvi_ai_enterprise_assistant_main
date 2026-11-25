@@ -54,7 +54,7 @@ class PostgresConversationStore(ConversationStore):
             return
         try:
             import psycopg
-            with psycopg.connect(self._dsn, connect_timeout=3) as conn:
+            with psycopg.connect(self._dsn, connect_timeout=4, prepare_threshold=None) as conn:
                 yield conn
         except ImportError:
             try:

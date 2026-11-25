@@ -63,7 +63,7 @@ class SupportTicketStore:
             try:
                 import psycopg
                 from psycopg.rows import dict_row
-                return psycopg.connect(self._dsn, row_factory=dict_row, connect_timeout=5)
+                return psycopg.connect(self._dsn, row_factory=dict_row, connect_timeout=5, prepare_threshold=None)
             except Exception as exc:
                 logger.warning("PostgreSQL support tickets connection failed (%s); falling back to SQLite.", exc)
                 self._dsn = ""

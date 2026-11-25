@@ -146,7 +146,6 @@ async function createWindow() {
     minWidth: 1024,
     minHeight: 680,
     title: 'Nanvi AI Enterprise Assistant',
-    backgroundColor: '#0a0d14',
     backgroundColor: '#000000',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),

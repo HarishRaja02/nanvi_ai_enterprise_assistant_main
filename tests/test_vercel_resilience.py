@@ -229,3 +229,70 @@ def test_vercel_security_and_isolation_hardening(monkeypatch, tmp_path):
     assert len(isolated_store.search_chunks("tenant-alpha", "user-a", "Alpha confidential")) == 1
 
     CompanyDataService.clear_registry()
+
+
+def test_local_account_store_contextmanager_does_not_double_yield_on_query_error():
+    """Exceptions raised inside `with store._connect()` must propagate cleanly,
+    never triggering `RuntimeError: generator didn't stop after throw()`."""
+    from contextlib import contextmanager
+    from backend.security.local_accounts import LocalAccountStore
+
+    exited_with_exc: list[type | None] = []
+
+    class FakePgConn:
+        pass
+
+    class FakePool:
+        @contextmanager
+        def connection(self, timeout=4):
+            try:
+                yield FakePgConn()
+            except BaseException as exc:
+                exited_with_exc.append(type(exc))
+                raise
+            else:
+                exited_with_exc.append(None)
+
+    store = LocalAccountStore(dsn="", sqlite_path=":memory:")
+    store._dsn = "postgresql://user:pass@localhost:5432/db"
+    store._pool = FakePool()
+
+    with pytest.raises(ValueError, match="simulated query error"):
+        with store._connect() as conn:
+            assert isinstance(conn, FakePgConn)
+            raise ValueError("simulated query error")
+
+    assert exited_with_exc == [ValueError]
+
+
+def test_user_log_store_contextmanager_does_not_double_yield_on_query_error():
+    """UserLogStore._connect() must not swallow caller exceptions or double-yield."""
+    from contextlib import contextmanager
+    from backend.logs.store import UserLogStore
+
+    exited_with_exc: list[type | None] = []
+
+    class FakePgConn:
+        pass
+
+    class FakePool:
+        @contextmanager
+        def connection(self, timeout=4):
+            try:
+                yield FakePgConn()
+            except BaseException as exc:
+                exited_with_exc.append(type(exc))
+                raise
+            else:
+                exited_with_exc.append(None)
+
+    store = UserLogStore(dsn="", sqlite_path=":memory:")
+    store._dsn = "postgresql://user:pass@localhost:5432/db"
+    store._pool = FakePool()
+
+    with pytest.raises(ValueError, match="simulated log query error"):
+        with store._connect() as conn:
+            assert isinstance(conn, FakePgConn)
+            raise ValueError("simulated log query error")
+
+    assert exited_with_exc == [ValueError]

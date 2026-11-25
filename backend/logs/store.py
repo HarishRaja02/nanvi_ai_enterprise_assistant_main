@@ -61,12 +61,13 @@ class UserLogStore:
             try:
                 from psycopg_pool import ConnectionPool
                 from psycopg.rows import dict_row
+                is_serverless = bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME") or os.getenv("VERCEL_ENV"))
                 self._pool = ConnectionPool(
                     self._dsn,
-                    min_size=1,
-                    max_size=5,
+                    min_size=0 if is_serverless else 1,
+                    max_size=2 if is_serverless else 5,
                     timeout=5,
-                    kwargs={"row_factory": dict_row},
+                    kwargs={"row_factory": dict_row, "connect_timeout": 4, "prepare_threshold": None},
                     open=True,
                 )
             except Exception as exc:
@@ -84,26 +85,46 @@ class UserLogStore:
 
     @contextmanager
     def _connect(self):
+        import sys
+
+        pg_cm = None
         if self._pool:
             try:
-                with self._pool.connection() as conn:
-                    yield conn
-                return
+                cm = self._pool.connection(timeout=4)
+                conn = cm.__enter__()
+                pg_cm = (cm, conn)
             except Exception as exc:
                 logger.warning("Pooled PostgreSQL query failed (%s); trying direct connection.", exc)
                 self._pool = None
 
-        if self._dsn:
+        if pg_cm is None and self._dsn:
             try:
                 import psycopg
                 from psycopg.rows import dict_row
-                with psycopg.connect(self._dsn, row_factory=dict_row, connect_timeout=1) as conn:
-                    yield conn
-                return
+                cm = psycopg.connect(
+                    self._dsn,
+                    row_factory=dict_row,
+                    connect_timeout=4,
+                    prepare_threshold=None,
+                )
+                conn = cm.__enter__()
+                pg_cm = (cm, conn)
             except Exception as exc:
                 logger.warning("PostgreSQL user logs connection failed (%s); falling back to local SQLite.", exc)
                 self._dsn = ""
                 self._pool = None
+
+        if pg_cm is not None:
+            cm, conn = pg_cm
+            exc_info: tuple[Any, Any, Any] = (None, None, None)
+            try:
+                yield conn
+            except BaseException:
+                exc_info = sys.exc_info()
+                raise
+            finally:
+                cm.__exit__(*exc_info)
+            return
 
         try:
             self._sqlite_path.parent.mkdir(parents=True, exist_ok=True)
